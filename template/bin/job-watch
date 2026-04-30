@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+JOBS_DIR="$AGENTWS_ROOT/jobs"
+
+usage() {
+    echo "Usage: job-watch <status> [--poll <seconds>] [--exec <command>]"
+    echo ""
+    echo "Watch for jobs entering a given status."
+    echo "Uses fswatch if available (macOS/Linux), falls back to polling."
+    echo ""
+    echo "Options:"
+    echo "  --poll <seconds>   Polling interval for fallback mode (default: 5)"
+    echo "  --exec <command>   Run command when a job matches. {} is replaced with job-id."
+    echo ""
+    echo "Examples:"
+    echo "  job-watch review"
+    echo "  job-watch review --exec 'echo Job {} is ready for review'"
+    echo "  job-watch pending --poll 10"
+    exit 1
+}
+
+[ $# -lt 1 ] && usage
+
+TARGET_STATUS="$1"
+shift
+
+POLL_INTERVAL=5
+EXEC_CMD=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --poll) POLL_INTERVAL="$2"; shift 2 ;;
+        --exec) EXEC_CMD="$2"; shift 2 ;;
+        *) echo "error: unknown option '$1'" >&2; usage ;;
+    esac
+done
+
+# Track which jobs we've already reported
+declare -A SEEN
+
+scan_jobs() {
+    for job_dir in "$JOBS_DIR"/*/; do
+        [ -d "$job_dir" ] || continue
+        job_id=$(basename "$job_dir")
+        status=$(cat "$job_dir/status" 2>/dev/null || echo "")
+
+        if [ "$status" = "$TARGET_STATUS" ] && [ -z "${SEEN[$job_id]:-}" ]; then
+            SEEN[$job_id]=1
+            echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $job_id -> $TARGET_STATUS"
+            if [ -n "$EXEC_CMD" ]; then
+                eval "${EXEC_CMD//\{\}/$job_id}"
+            fi
+        fi
+
+        # Un-track jobs that left the target status so we re-fire if they return
+        if [ "$status" != "$TARGET_STATUS" ] && [ -n "${SEEN[$job_id]:-}" ]; then
+            unset "SEEN[$job_id]"
+        fi
+    done
+}
+
+# Try fswatch (macOS/Linux) for real-time notifications
+if command -v fswatch &>/dev/null; then
+    echo "Watching for jobs entering '$TARGET_STATUS' (fswatch mode)..."
+    # Initial scan
+    scan_jobs
+    # Watch status files for changes
+    fswatch -r --include '*/status$' --exclude '.*' "$JOBS_DIR" | while read -r _; do
+        scan_jobs
+    done
+else
+    echo "Watching for jobs entering '$TARGET_STATUS' (polling every ${POLL_INTERVAL}s)..."
+    echo "(Install fswatch for real-time notifications)"
+    while true; do
+        scan_jobs
+        sleep "$POLL_INTERVAL"
+    done
+fi

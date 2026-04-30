@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+JOBS_DIR="$AGENTWS_ROOT/jobs"
+
+FILTER="${1:-}"
+
+if [ ! -d "$JOBS_DIR" ]; then
+    echo "No jobs directory found."
+    exit 0
+fi
+
+found=0
+for job_dir in "$JOBS_DIR"/*/; do
+    [ -d "$job_dir" ] || continue
+    job_id=$(basename "$job_dir")
+    status=$(cat "$job_dir/status" 2>/dev/null || echo "unknown")
+
+    if [ -n "$FILTER" ] && [ "$status" != "$FILTER" ]; then
+        continue
+    fi
+
+    jtype=$(cat "$job_dir/type" 2>/dev/null || echo "-")
+
+    agent=""
+    if [ -f "$job_dir/agent.id" ]; then
+        agent="  ($(cat "$job_dir/agent.id"))"
+    fi
+
+    printf "%-20s  %-10s  %-12s%s\n" "$job_id" "$status" "$jtype" "$agent"
+    found=1
+done
+
+if [ "$found" -eq 0 ]; then
+    if [ -n "$FILTER" ]; then
+        echo "No jobs with status '$FILTER'."
+    else
+        echo "No jobs found."
+    fi
+fi

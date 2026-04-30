@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+JOBS_DIR="$AGENTWS_ROOT/jobs"
+
+STALE_MINUTES="${1:-60}"
+
+echo "Reaping jobs stale for more than ${STALE_MINUTES} minutes..."
+
+now=$(date +%s)
+reaped=0
+
+for job_dir in "$JOBS_DIR"/*/; do
+    [ -d "$job_dir" ] || continue
+    job_id=$(basename "$job_dir")
+    status=$(cat "$job_dir/status" 2>/dev/null || echo "")
+
+    # Only reap claimed or running jobs
+    case "$status" in
+        claimed|running) ;;
+        *) continue ;;
+    esac
+
+    # Check lock directory age
+    if [ -d "$job_dir/lock" ]; then
+        lock_time=$(stat -f %m "$job_dir/lock" 2>/dev/null || stat -c %Y "$job_dir/lock" 2>/dev/null || echo "0")
+        age=$(( (now - lock_time) / 60 ))
+
+        if [ "$age" -ge "$STALE_MINUTES" ]; then
+            echo "reaping: $job_id (status: $status, stale for ${age}m)"
+            rmdir "$job_dir/lock" 2>/dev/null || true
+            rm -f "$job_dir/agent.id"
+            echo "pending" > "$job_dir/status"
+            reaped=$((reaped + 1))
+        fi
+    fi
+done
+
+echo "Reaped $reaped job(s)."
