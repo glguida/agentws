@@ -1,10 +1,10 @@
-# AgentWS — Agent Workspace Protocol
+# AgentWS — Filesystem-Based Job Protocol
 
-You are an agent operating within a shared, filesystem-based agent workspace.
+You are an agent operating within a shared, filesystem-based job system.
 Multiple agents work concurrently on independent jobs. Coordination happens
 entirely through files — no database, no server.
 
-AgentWS is **only the workspace**. It knows nothing about your project. All
+AgentWS is **only the queue**. It knows nothing about your project. All
 project-specific behavior — code style, testing requirements, review
 criteria, workflow rules — lives in the job specs and in the project
 repo's own documentation.
@@ -62,6 +62,8 @@ You are a worker for a specific job type. Your role defines your specific respon
 
 **IMPORTANT**: You must work INDEFINITELY. Never terminate. Keep working forever.
 
+**IDLE OUTPUT GUARDRAIL**: While you are in a continuous worker role and no job/action is available, your only allowed action is another wait/claim/monitoring tool call appropriate for your role. Do not send a final/chat response, do not summarize idle state, do not acknowledge that you are waiting, and do not stop. Producing a final response while idle is a worker failure; the correct next action is always the next wait/claim/monitoring command.
+
 **Check if there's a role document for your type**:
 - Look in `roles/<type>.md` for detailed instructions
 - Common roles: `planner`, `coder`, `reviewer`, `committer`
@@ -74,37 +76,52 @@ If a role document exists, **follow it exactly**. It contains:
 
 **Generic workflow** (if no role document):
 
-**CRITICAL**: You are running inside a tool harness where `bin/job-claim --wait` may be interrupted by tool timeouts. A timeout does NOT mean there is no more work and is NOT a reason to stop.
-
 Repeat this forever:
 
-1. Run:
+1. **Wait for work** (this will block until a job is available):
    ```bash
-   bin/job-claim -t <type> --wait
+   bin/job-wait -t <type>
    ```
+   If this times out (after ~2 minutes), that's normal - just run it again.
+   **CRITICAL**: After a timeout, your next action MUST be another `job-wait` call.
+   Never send a message to the user about timeouts or idle state.
 
-2. If the command times out, immediately run it again.
-3. If it returns "No pending jobs. Waiting..." and times out, immediately run it again.
-4. If a job is claimed, process that job completely.
-5. Log progress to `jobs/<job-id>/log.md`
-6. Follow the "When Done" instructions
-7. After marking the job done/failed, return to step 1.
-8. Never summarize idle state to the user.
-9. Never exit just because no job is currently available.
+2. **Claim a job** (this returns immediately):
+   ```bash
+   bin/job-claim -t <type>
+   ```
+   This returns either `CLAIMED: <job-id>` or `NO_JOBS`.
+
+3. **Process the job** if you got one:
+   - If output was `CLAIMED: <job-id>`, process that exact job
+   - Read `jobs/<job-id>/spec.md` for instructions
+   - Log progress to `jobs/<job-id>/log.md`
+   - Follow the "When Done" instructions
+   - Mark the job done/failed when complete
+
+4. **Return to step 1** - never exit, never stop
+
+**IDLE BEHAVIOR ENFORCEMENT**:
+While in this role and waiting for jobs:
+- A timeout is NOT progress, NOT failure, and NOT something to report
+- The correct response to timeout is another tool call, indefinitely
+- Never send a final assistant message during idle waiting
+- Never summarize idleness, never say "ready", never return control to user
+- The only valid interruption is the user explicitly asking a question or stopping you
 
 **DO NOT:**
-- Stop after a timeout
-- Tell the user there are no jobs unless explicitly asked
-- Run `job-list` as a substitute for waiting
-- Exit the session
-- Give up
+- Exit when idle
+- Tell the user there are no jobs
+- Look for work outside the job system
+- Interpret timeouts as errors
+- Create complex job-finding logic
 
 **DO:**
-- Keep calling `bin/job-claim -t <type> --wait` forever
-- Treat timeouts as normal
-- Stay silent when idle
-
-The correct behavior when idle is to keep calling `bin/job-claim --wait`.
+- Use job-wait to block until work arrives
+- Use job-claim to claim work
+- Treat timeouts as normal (just retry)
+- Stay in your infinite loop forever
+- Trust that jobs will arrive through the system
 
 ### "Resume job X"
 A previous agent was interrupted.
@@ -272,16 +289,23 @@ Agents should only claim jobs matching their assigned type.
 
 ## Claiming a Job
 
-To claim a job, use the `job-claim` helper:
+**Simple two-step approach**:
 
 ```bash
-bin/job-claim -t <type>           # claim oldest pending job of this type
-bin/job-claim -t <type> --wait    # block until a matching job is available
-bin/job-claim <job-id>            # claim a specific job
+bin/job-wait -t <type>    # Block until a job is available
+bin/job-claim -t <type>   # Claim the oldest pending job (no waiting)
 ```
 
-This uses atomic `mkdir` to create a lock — safe even on NFS. If the claim
-succeeds, the job is yours. If it fails, skip to another job.
+The separated approach is clearer for agents:
+1. `job-wait` blocks indefinitely (may timeout after ~2min, just retry)
+2. `job-claim` returns immediately with `CLAIMED: <job-id>` or `NO_JOBS`
+
+You can also claim a specific job:
+```bash
+bin/job-claim <job-id>    # claim a specific job
+```
+
+This uses atomic `mkdir` to create a lock — safe even on NFS.
 
 **Never** modify a job you have not claimed.
 
@@ -312,8 +336,12 @@ done before continuing.
 
 The `bin/` directory contains shell scripts for job management:
 
-- `bin/job-create <job-id> -t <type>` — Create a new job with a type
-- `bin/job-claim [-t <type>] [--wait]` — Claim a pending job, optionally filtered by type
+- `bin/job-create <job-id> -t <type> [spec-file]` — Create a new job with a type
+  - **IMPORTANT**: Always provide spec-file to avoid race conditions!
+  - Without spec-file: Creates job with empty template (agent may claim it prematurely)
+  - With spec-file: Creates job atomically with complete specification
+- `bin/job-wait [-t <type>]` — Block until a pending job is available
+- `bin/job-claim [-t <type>]` — Claim a pending job (returns immediately with CLAIMED: or NO_JOBS)
 - `bin/job-list [status]` — List jobs, optionally filtered by status
 - `bin/job-status <job-id> [new-status]` — Get or set job status
 - `bin/job-watch <status>` — Watch for jobs entering a given status (e.g., `review`)
@@ -321,3 +349,23 @@ The `bin/` directory contains shell scripts for job management:
 
 Use these helpers rather than manipulating files directly — they handle
 locking and validation.
+
+### Best Practice: Creating Jobs with Complete Specifications
+
+**Always prepare the spec BEFORE creating the job:**
+
+```bash
+# GOOD: Write spec first, then create job atomically
+cat > /tmp/spec.md <<'EOF'
+# Job Specification
+## Objective
+[Complete objective here]
+## Acceptance Criteria
+[Complete criteria here]
+EOF
+bin/job-create my-job -t code /tmp/spec.md
+
+# BAD: Create job then edit (race condition!)
+bin/job-create my-job -t code  # Creates with empty template
+vim jobs/my-job/spec.md         # Too late - agent might have claimed it!
+```

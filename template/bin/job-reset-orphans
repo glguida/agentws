@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+JOBS_DIR="$AGENTWS_ROOT/jobs"
+
+count=0
+
+# Reset orphaned jobs (claimed/running but PID is dead)
+for job_dir in "$JOBS_DIR"/*; do
+    [ -d "$job_dir" ] || continue
+
+    status=$(cat "$job_dir/status" 2>/dev/null || echo "")
+    if [ "$status" = "claimed" ] || [ "$status" = "running" ]; then
+        if [ -f "$job_dir/agent.id" ]; then
+            agent_info=$(cat "$job_dir/agent.id")
+            pid=$(echo "$agent_info" | cut -d: -f2)
+
+            if [ -n "$pid" ] && ! ps -p "$pid" > /dev/null 2>&1; then
+                job_name=$(basename "$job_dir")
+                echo "Resetting orphaned job: $job_name (PID $pid dead)"
+
+                # Reset to pending
+                rm -rf "$job_dir/lock" 2>/dev/null || true
+                rm -f "$job_dir/agent.id"
+                echo "pending" > "$job_dir/status"
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Reset by monitor (orphaned PID $pid)" >> "$job_dir/log.md"
+                count=$((count + 1))
+            fi
+        fi
+    fi
+done
+
+if [ "$count" -eq 0 ]; then
+    echo "No orphaned jobs found"
+else
+    echo "Reset $count orphaned jobs"
+fi

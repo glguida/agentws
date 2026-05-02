@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+JOBS_DIR="$AGENTWS_ROOT/jobs"
+
+usage() {
+    echo "Usage: job-wait [-t <type>] [--poll <seconds>]"
+    echo ""
+    echo "Wait (block) until a pending job is available."
+    echo "Returns immediately if jobs are already pending."
+    echo ""
+    echo "Options:"
+    echo "  -t <type>          Only wait for jobs of this type"
+    echo "  --poll <seconds>   Polling interval (default: 5)"
+    exit 1
+}
+
+JOB_TYPE=""
+POLL_INTERVAL=5
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t) JOB_TYPE="$2"; shift 2 ;;
+        --poll) POLL_INTERVAL="$2"; shift 2 ;;
+        --help|-h) usage ;;
+        *) echo "error: unknown option '$1'" >&2; usage ;;
+    esac
+done
+
+# Check if there's a pending job matching our criteria
+has_pending_job() {
+    for job_dir in "$JOBS_DIR"/*; do
+        [ -d "$job_dir" ] || continue
+
+        local status
+        status=$(cat "$job_dir/status" 2>/dev/null || echo "")
+        [ "$status" = "pending" ] || continue
+
+        # Check type filter
+        if [ -n "$JOB_TYPE" ]; then
+            local jtype
+            jtype=$(cat "$job_dir/type" 2>/dev/null || echo "")
+            [ "$jtype" = "$JOB_TYPE" ] || continue
+        fi
+
+        # Check if not locked
+        [ ! -d "$job_dir/lock" ] || continue
+
+        return 0  # Found one!
+    done
+    return 1
+}
+
+# Main wait loop
+while true; do
+    if has_pending_job; then
+        # Job available - exit successfully
+        exit 0
+    fi
+    sleep "$POLL_INTERVAL"
+done

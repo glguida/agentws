@@ -4,6 +4,28 @@ set -euo pipefail
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 JOBS_DIR="$AGENTWS_ROOT/jobs"
 
+usage() {
+    echo "Usage: job-claim [job-id] [-t <type>]"
+    echo ""
+    echo "Claim a job. If no job-id is given, claims the oldest pending job."
+    echo "Returns 'CLAIMED: <job-id>' or 'NO_JOBS'"
+    echo ""
+    echo "Options:"
+    echo "  -t <type>    Only claim jobs of this type"
+    exit 1
+}
+
+JOB_ID=""
+JOB_TYPE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t) JOB_TYPE="$2"; shift 2 ;;
+        --help|-h) usage ;;
+        *) JOB_ID="$1"; shift ;;
+    esac
+done
+
 # Check if I already have a claimed job
 MY_ID="$(hostname -s):$$"
 for job_dir in "$JOBS_DIR"/*; do
@@ -17,33 +39,6 @@ for job_dir in "$JOBS_DIR"/*; do
             exit 0
         fi
     fi
-done
-
-usage() {
-    echo "Usage: job-claim [job-id] [-t <type>] [--wait] [--poll <seconds>]"
-    echo ""
-    echo "Claim a job. If no job-id is given, claims the oldest pending job."
-    echo ""
-    echo "Options:"
-    echo "  -t <type>          Only claim jobs of this type"
-    echo "  --wait             Block until a pending job is available"
-    echo "  --poll <seconds>   Polling interval when waiting (default: 5)"
-    exit 1
-}
-
-JOB_ID=""
-JOB_TYPE=""
-WAIT=0
-POLL_INTERVAL=5
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -t) JOB_TYPE="$2"; shift 2 ;;
-        --wait) WAIT=1; shift ;;
-        --poll) POLL_INTERVAL="$2"; shift 2 ;;
-        --help|-h) usage ;;
-        *) JOB_ID="$1"; shift ;;
-    esac
 done
 
 # Try to claim a specific job
@@ -75,60 +70,27 @@ claim_job() {
     return 0
 }
 
-# Try to claim the oldest pending job
-claim_next() {
-    # Sort by directory modification time (oldest first)
-    for job_dir in $(ls -1tr "$JOBS_DIR" 2>/dev/null); do
-        local result
-        if result=$(claim_job "$job_dir"); then
-            echo "$result"  # Pass through the job ID!
-            return 0
-        fi
-    done
-    return 1
-}
-
 # Specific job requested
 if [ -n "$JOB_ID" ]; then
     if [ ! -d "$JOBS_DIR/$JOB_ID" ]; then
         echo "error: job '$JOB_ID' does not exist" >&2
         exit 1
     fi
-    if result=$(claim_job "$JOB_ID"); then
-        echo "$result"
+    if claim_job "$JOB_ID"; then
         exit 0
-    fi
-    if [ "$WAIT" -eq 1 ]; then
-        echo "Waiting for job '$JOB_ID' to become pending..."
-        while true; do
-            if result=$(claim_job "$JOB_ID"); then
-                echo "$result"
-                exit 0
-            fi
-            sleep "$POLL_INTERVAL"
-        done
     else
         echo "error: could not claim '$JOB_ID' (not pending or already locked)" >&2
         exit 1
     fi
 fi
 
-# No specific job — claim next available
-if result=$(claim_next); then
-    echo "$result"
-    exit 0
-fi
+# No specific job — try to claim the oldest pending job
+# Sort by directory modification time (oldest first)
+for job_dir in $(ls -1tr "$JOBS_DIR" 2>/dev/null); do
+    if claim_job "$job_dir"; then
+        exit 0
+    fi
+done
 
-if [ "$WAIT" -eq 1 ]; then
-    echo "No pending jobs. Waiting..."
-    while true; do
-        if result=$(claim_next); then
-            echo "$result"
-            exit 0
-        fi
-        sleep "$POLL_INTERVAL"
-    done
-else
-    echo "No pending jobs."
-    exit 1
-fi
+echo "NO_JOBS"
+exit 0

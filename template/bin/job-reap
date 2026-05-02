@@ -24,7 +24,14 @@ for job_dir in "$JOBS_DIR"/*/; do
 
     # Check lock directory age
     if [ -d "$job_dir/lock" ]; then
-        lock_time=$(stat -f %m "$job_dir/lock" 2>/dev/null || stat -c %Y "$job_dir/lock" 2>/dev/null || echo "0")
+        # Try Linux stat first, then macOS, then default to 0
+        if stat -c %Y "$job_dir/lock" >/dev/null 2>&1; then
+            lock_time=$(stat -c %Y "$job_dir/lock")
+        elif stat -f %m "$job_dir/lock" >/dev/null 2>&1; then
+            lock_time=$(stat -f %m "$job_dir/lock")
+        else
+            lock_time=0
+        fi
         age=$(( (now - lock_time) / 60 ))
 
         if [ "$age" -ge "$STALE_MINUTES" ]; then

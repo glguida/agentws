@@ -11,7 +11,7 @@ else
     echo "Created jobs/ directory."
 fi
 
-echo "Jobsys initialized at: $AGENTWS_ROOT"
+echo "AgentWS initialized at: $AGENTWS_ROOT"
 echo ""
 echo "Next steps:"
 echo "  1. Create a job:  bin/job-create my-first-job -t plan"

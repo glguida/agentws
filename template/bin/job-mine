@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+JOBS_DIR="$AGENTWS_ROOT/jobs"
+
+# Get my agent ID (hostname:PID)
+MY_ID="$(hostname -s):$$"
+
+# Find jobs claimed by me
+for job_dir in "$JOBS_DIR"/*; do
+    [ -d "$job_dir" ] || continue
+
+    if [ -f "$job_dir/agent.id" ]; then
+        agent=$(cat "$job_dir/agent.id" 2>/dev/null | cut -d: -f1-2)
+        if [ "$agent" = "$MY_ID" ]; then
+            job_name=$(basename "$job_dir")
+            status=$(cat "$job_dir/status" 2>/dev/null || echo "unknown")
+            echo "$job_name ($status)"
+        fi
+    fi
+done
