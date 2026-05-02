@@ -1,0 +1,14 @@
+# Default AgentWS team.
+#
+# Format:
+#   <tmux-window-name> <agent-role>
+#
+# agentws/tools/run_agentws.sh sends each agent the prompt:
+#   You are a <agent-role>
+
+planner planner
+coder-1 coder
+coder-2 coder
+reviewer-1 reviewer
+reviewer-2 reviewer
+committer committer

@@ -17,15 +17,21 @@ running a server or adopting a framework.
 - **Roles live in git as Markdown.** The instructions are ordinary `.md` files
   in `roles/`, so they can be reviewed, versioned, branched, and changed with
   the rest of the repo.
-- **Agents are easy to launch.** Start an agent with the role you want, for
-  example:
+- **Agents are easy to launch.** Start the configured team from the project
+  root:
 
 ```bash
-pi "You are a coder"
+agentws/tools/run_agentws.sh
 ```
 
-The agent reads the matching role file, claims jobs from the filesystem queue,
-logs what it did, and hands work to the next role.
+The launcher reads `agentws/default.team`, opens one tmux window per configured
+agent, and starts each one with a minimal role prompt such as
+`You are a coder`. Each agent reads the matching role file, claims jobs from
+the filesystem queue, logs what it did, and hands work to the next role.
+
+For day-to-day use, see `PRACTICAL.md`: launch the team, use your favorite
+coding agent to choose the feature and create a plan job, then watch the team
+plan, implement, review, and commit it.
 
 ### How to install in your project
 
@@ -42,7 +48,8 @@ committed.
 ```
 
 This gives your project a committed `agentws/` directory with `AGENTS.md`,
-`roles/`, and `bin/`, while keeping runtime job state out of git.
+`roles/`, `bin/`, `tools/`, and `default.team`, while keeping runtime job state
+out of git.
 
 The standard roles are:
 
@@ -51,15 +58,12 @@ The standard roles are:
 - `reviewer` - reviews completed code
 - `committer` - merges approved work
 
-After that, customize the role files in `agentws/roles/` like any other project
-documentation, then launch agents with prompts like:
+After that, customize the role files in `agentws/roles/` and the team file in
+`agentws/default.team` like any other project documentation, then launch the
+configured team:
 
 ```bash
-cd agentws
-pi "You are a planner"
-pi "You are a coder"
-pi "You are a reviewer"
-pi "You are a committer"
+agentws/tools/run_agentws.sh
 ```
 
 ## TL;DR for Agents
@@ -80,19 +84,9 @@ bin/job-create initial-task -t plan
 # Edit jobs/initial-task/spec.md with the goal
 ```
 
-3. **Launch agents** (tell your human to launch these):
+3. **Launch agents** (tell your human to launch the configured team):
 ```bash
-# Planner to break down the task
-pi "You are a planner"
-
-# Coders to implement
-pi "You are a coder"
-
-# Reviewer to check quality
-pi "You are a reviewer"
-
-# Committer to merge approved code
-pi "You are a committer"
+agentws/tools/run_agentws.sh
 ```
 
 That's it. The planner breaks your goal into sub-jobs, workers pick
@@ -107,10 +101,34 @@ The template includes standard development roles in `template/roles/`:
 - **reviewer.md** - Reviews code quality, doesn't merge
 - **committer.md** - Merges approved code, verifies integration
 
-Humans launch agents with the role name:
+Humans usually launch the configured team with:
 ```bash
+agentws/tools/run_agentws.sh
+```
+
+The launcher reads `agentws/default.team`. Each row names a tmux window and an
+agent role:
+
+```text
+coder-1 coder
+```
+
+It sends only the matching role prompt:
+
+```text
+You are a coder
+```
+
+You can still launch one agent manually with the role name:
+```bash
+cd agentws
 pi "You are a coder"
 ```
+
+The bundled launcher uses `pi` from pi.dev because that is the default local
+agent CLI for this workflow. AgentWS itself is CLI-agnostic: any coding-agent
+CLI that reads local instructions can be used the same way, as long as it starts
+inside `agentws/` with a role prompt such as `You are a coder`.
 
 The agent will read the matching role document. If you are an agent reading
 this, do not launch other agents yourself; tell your human which roles to
@@ -204,8 +222,10 @@ my-project/
   .gitignore        # Must include "agentws/jobs/"
   agentws/          # The agent workspace (commit this!)
     AGENTS.md      # Protocol spec — agents read this automatically
+    default.team    # Default tmux team for tools/run_agentws.sh
     roles/          # Role specifications (planner, coder, reviewer, etc.)
     bin/            # Helper scripts
+    tools/          # Launch and workflow helper tools
     jobs/           # Job directories appear here (gitignored)
   src/              # Your actual code
   AGENTS.md         # Your project's own conventions (optional)
@@ -280,12 +300,23 @@ Set status to done.
 ### 2. Tell your human to launch agents
 
 ```bash
-# Tell your human to launch agents for different roles
+# Launch the configured team.
+agentws/tools/run_agentws.sh
+```
+
+Agents can also be launched manually, one process per role:
+
+```bash
+cd agentws
 pi "You are a planner"
 pi "You are a coder"
 pi "You are a reviewer"
 pi "You are a committer"
 ```
+
+The examples use `pi` from pi.dev, but AgentWS only depends on the filesystem
+protocol and local role prompts. Other coding-agent CLIs can be used if they are
+started in `agentws/` with the same `You are a <role>` prompt.
 
 Agents will:
 - Read their role document for specific instructions
