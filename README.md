@@ -7,6 +7,61 @@ AgentWS lets multiple AI agents work concurrently on independent jobs,
 coordinating entirely through the filesystem. It works on local disks,
 NFS, sshfs, or any shared mount.
 
+## TL;DR for Humans
+
+AgentWS is a tiny way to give AI agents durable, project-specific roles without
+running a server or adopting a framework.
+
+- **Roles are customizable.** Start with planner, coder, reviewer, and
+  committer, then edit them or add your own roles for your project.
+- **Roles live in git as Markdown.** The instructions are ordinary `.md` files
+  in `roles/`, so they can be reviewed, versioned, branched, and changed with
+  the rest of the repo.
+- **Agents are easy to launch.** Start an agent with the role you want, for
+  example:
+
+```bash
+pi "You are a coder"
+```
+
+The agent reads the matching role file, claims jobs from the filesystem queue,
+logs what it did, and hands work to the next role.
+
+### How to install in your project
+
+To add AgentWS to an existing repository, open an agent in that repository and
+point it at the AgentWS repo:
+
+```text
+Install AgentWS in this repository using https://github.com/glguida/agentws.
+Read the AgentWS README, create an agentws/ directory from the template,
+initialize it, and commit the reusable configuration.
+
+Add agentws/jobs/ to this project's .gitignore so runtime jobs are not
+committed.
+```
+
+This gives your project a committed `agentws/` directory with `AGENTS.md`,
+`roles/`, and `bin/`, while keeping runtime job state out of git.
+
+The standard roles are:
+
+- `planner` - breaks goals into concrete jobs
+- `coder` - implements code changes
+- `reviewer` - reviews completed code
+- `committer` - merges approved work
+
+After that, customize the role files in `agentws/roles/` like any other project
+documentation, then launch agents with prompts like:
+
+```bash
+cd agentws
+pi "You are a planner"
+pi "You are a coder"
+pi "You are a reviewer"
+pi "You are a committer"
+```
+
 ## TL;DR for Agents
 
 **If you're an AI agent being asked to use agentws:**
@@ -25,19 +80,19 @@ bin/job-create initial-task -t plan
 # Edit jobs/initial-task/spec.md with the goal
 ```
 
-3. **Launch agents** (tell your human to run these):
+3. **Launch agents** (tell your human to launch these):
 ```bash
 # Planner to break down the task
-pi --model opus "You are a plan agent. Read roles/planner.md. Work on jobs of type plan."
+pi "You are a planner"
 
 # Coders to implement
-pi --model sonnet "You are a code agent. Read roles/coder.md. Work on jobs of type code."
+pi "You are a coder"
 
 # Reviewer to check quality
-pi --model sonnet "You are a review agent. Read roles/reviewer.md. Work on jobs of type review."
+pi "You are a reviewer"
 
 # Committer to merge approved code
-pi --model sonnet "You are a commit agent. Read roles/committer.md. Work on jobs of type commit."
+pi "You are a committer"
 ```
 
 That's it. The planner breaks your goal into sub-jobs, workers pick
@@ -52,12 +107,14 @@ The template includes standard development roles in `template/roles/`:
 - **reviewer.md** - Reviews code quality, doesn't merge
 - **committer.md** - Merges approved code, verifies integration
 
-To use a role, agents read the role document:
+Humans launch agents with the role name:
 ```bash
-pi --model sonnet "You are a code agent. Read roles/coder.md. Work on jobs of type code."
+pi "You are a coder"
 ```
 
-Projects can customize these roles or add new ones. The role documents
+The agent will read the matching role document. If you are an agent reading
+this, do not launch other agents yourself; tell your human which roles to
+launch. Projects can customize these roles or add new ones. The role documents
 contain the detailed workflows, quality standards, and handoff procedures.
 
 ## Why
@@ -83,9 +140,8 @@ AgentWS (Agent Workspace) takes a different approach:
 - **Works anywhere files work.** Local disk, NFS, sshfs, Dropbox, a USB
   stick. No ports to open, no services to run.
 
-- **Model routing via job types.** Send hard planning tasks to Opus,
-  bulk coding to Sonnet, simple tests to Haiku. Each agent claims only
-  jobs matching its type.
+- **Role routing via job types.** Run as many planners, coders, reviewers,
+  and committers as you need. Each agent claims only jobs matching its role.
 
 - **Dependencies without a DAG engine.** The planner encodes workflow as
   natural language in each job's spec: "When done, create a review job."
@@ -221,14 +277,14 @@ Follow conventions in /path/to/my-project/AGENTS.md
 Set status to done.
 ```
 
-### 2. Launch agents
+### 2. Tell your human to launch agents
 
 ```bash
-# Launch agents for different job types
-pi --model opus "You are a plan agent. Read roles/planner.md. Work on jobs of type plan."
-pi --model sonnet "You are a code agent. Read roles/coder.md. Work on jobs of type code."
-pi --model sonnet "You are a review agent. Read roles/reviewer.md. Work on jobs of type review."
-pi --model sonnet "You are a commit agent. Read roles/committer.md. Work on jobs of type commit."
+# Tell your human to launch agents for different roles
+pi "You are a planner"
+pi "You are a coder"
+pi "You are a reviewer"
+pi "You are a committer"
 ```
 
 Agents will:
@@ -240,7 +296,7 @@ Agents will:
 The specific workflow depends on your project, but the template includes
 standard software development roles (planner → coder → reviewer → committer).
 
-### 3. Monitor
+### 3. Check job status
 
 ```bash
 bin/job-list              # See all jobs
@@ -275,7 +331,7 @@ You (human)
   │
   ├─ Create initial job(s) with your goal
   │
-  └─ Launch agents for different job types
+  └─ Launch agents for different roles
        │
        ├─ Each agent claims jobs of its type
        ├─ Does the work according to its role
@@ -323,9 +379,9 @@ conditional logic ("if tests fail, create a fix job") without a graph
 DSL.
 
 **Why job types instead of agent names?**
-Types decouple the work from the worker. You can run 5 Sonnet code
-agents or 1 — the system doesn't care. Scale by adding agents, not by
-reconfiguring the queue.
+Types decouple the work from the worker. You can run 5 coder agents or one —
+the system doesn't care. Scale by adding agents, not by reconfiguring the
+queue.
 
 **Why polling in job-claim?**
 `fswatch`/`inotify` don't fire on NFS/sshfs (the local kernel never
