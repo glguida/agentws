@@ -9,11 +9,6 @@ project-specific behavior — code style, testing requirements, review
 criteria, workflow rules — lives in the job specs and in the project
 repo's own documentation.
 
-## Project-Specific Documentation
-
-**TPA Cleanup Project Workflow**: See `WORKFLOW.md` for the complete pipeline,
-execution phases, and quality gates for this project.
-
 ## Quick Start — Determine Your Role
 
 **CRITICAL**: You are an agent with a specific role. Your role defines everything you do.
@@ -233,10 +228,8 @@ for robust, self-documenting workflows:
 5. **No downstream job may start until this review reaches `done` status.**
 ```
 
-- Use **consistent numeric prefixes** (`tpa-01-`, `tpa-02-...`) so the
+- Use **consistent numeric prefixes** (`task-01-`, `task-02-...`) so the
   intended order is obvious.
-- Maintain a single **summary/coordinator job** (type=`plan` or `summary`)
-  that review jobs update with overall progress.
 - During initial planning, refine all specs before agents claim them.
   After a job is claimed, treat `spec.md` as immutable except for critical
   fixes.

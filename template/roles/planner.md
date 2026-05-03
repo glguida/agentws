@@ -31,8 +31,7 @@ Repeat this infinite loop:
 
 5. **Read and understand the job**:
    - Read job specification thoroughly
-   - Read project documentation (AGENTS.md, WORKFLOW.md, README, etc.)
-   - For TPA cleanup: Check WORKFLOW.md for execution phases and dependencies
+   - Read project documentation (AGENTS.md, README, etc.)
    - Understand project structure and conventions
    - Identify key components needed
 
@@ -64,22 +63,22 @@ Repeat this infinite loop:
    job-create, the job is born with its spec already in place. No agent can claim
    an empty job!
 
-   For phased projects (like TPA cleanup):
+   For phased projects (complex projects):
    ```bash
    # Phase 1: Create and spec immediately (no dependencies)
-   bin/job-create hal-interface -t code
-   # NOW WRITE THE SPEC for hal-interface before continuing!
+   bin/job-create foundation-api -t code
+   # NOW WRITE THE SPEC for foundation-api before continuing!
 
-   # Phase 2-4: DO NOT CREATE YET!
-   # Instead, create a coordinator job for yourself:
+   # Later phases: DO NOT CREATE YET!
+   # Instead, create a follow-up plan job for the dependency gate:
    bin/job-create create-phase-2-jobs -t plan
    # NOW WRITE THE SPEC for create-phase-2-jobs
    ```
 
    Then in the `create-phase-2-jobs` spec, specify:
-   - "When hal-interface-commit exists and is done, create Phase 2 jobs"
+   - "When foundation-api-commit exists and is done, create Phase 2 jobs"
 
-   This way you act as coordinator for your own plan!
+   This keeps phase dependencies explicit inside the job system.
 
 8. **Write detailed specifications IMMEDIATELY after job-create**:
    For EACH job, write a complete spec BEFORE creating the next job:
@@ -225,8 +224,8 @@ As a planner, you also coordinate phased execution:
 1. **Monitor completion of phases**:
    ```bash
    # Check if a commit job is done
-   test -f jobs/hal-interface-commit/status && \
-     grep -q done jobs/hal-interface-commit/status && \
+   test -f jobs/foundation-api-commit/status && \
+     grep -q done jobs/foundation-api-commit/status && \
      echo "Ready for Phase 2"
    ```
 
@@ -240,7 +239,7 @@ As a planner, you also coordinate phased execution:
    If jobs were created too early:
    ```bash
    # Reset blocked job when dependency is met
-   bin/job-status extract-scheduler pending
+   bin/job-status feature-02 pending
    ```
 
 ## Planning Best Practices
