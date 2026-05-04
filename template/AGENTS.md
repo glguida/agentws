@@ -18,6 +18,13 @@ Role files in `roles/` define role-specific behavior: which job type a role
 claims, what output jobs it normally creates, who receives follow-up work, and
 what role-specific problems mean.
 
+This file also defines the default workflow for the standard AgentWS role set.
+An optional `WORKFLOW.md` in this AgentWS directory defines local workflow
+conventions for this queue, such as pipeline shape, branch/worktree naming,
+quality gates, cleanup policy, or release rules. `WORKFLOW.md` takes priority
+over the default workflow in this file. It MUST NOT override AgentWS protocol
+invariants.
+
 Job specs define the actual work. A spec may tell an agent what repository,
 directory, service, dataset, or other target to work on; what commands to run;
 what files to edit; and what target-specific rules to follow. A spec MUST NOT
@@ -42,6 +49,75 @@ What is my role?
 ```
 
 Available roles are the Markdown files under `roles/`.
+
+## Local Workflow
+
+If `WORKFLOW.md` exists in this AgentWS directory, every agent MUST read it after
+reading its role file and before claiming or processing work. Follow
+`WORKFLOW.md` for local workflow conventions that are not defined by this
+protocol.
+
+`WORKFLOW.md` takes priority over the Default Workflow section below. If
+`WORKFLOW.md` conflicts with AgentWS protocol mechanics in this file, follow this
+file. If the conflict makes the job ambiguous or unsafe, create a notification
+for the responsible coordinating role.
+
+## Default Workflow
+
+Use this workflow when `WORKFLOW.md` is absent or silent on a workflow choice.
+If `WORKFLOW.md` gives a different local convention, follow `WORKFLOW.md` unless
+it violates this file's protocol mechanics.
+
+Implementation work follows this pipeline:
+
+```text
+plan -> code -> review -> commit
+                |
+                v
+         code job for fixes
+```
+
+Review is always required after code work. When review requests changes, the
+workflow returns to a new code job and repeats until the work is approved or a
+blocker requires planner action.
+
+Documentation work follows the handoff defined by the documentation job. When
+documentation files change and no stricter handoff is given, the default handoff
+is to integration work.
+
+The default quality gate for review is:
+
+1. Code quality: clean, maintainable, and consistent with nearby patterns.
+2. Specification adherence: the work does what the original job requested.
+3. Verification: required tests/checks ran, or gaps are clearly explained.
+4. Documentation: durable facts and user-facing behavior are documented.
+5. No regressions: existing behavior is preserved unless the spec says otherwise.
+6. Build/integration: the relevant target builds or the failure is explained.
+
+The default review feedback loop is:
+
+1. Reviewer creates a code fix job.
+2. Coder picks up the fix job like any other code job.
+3. The fix job uses its own branch and worktree.
+4. Coder creates a new review job when done.
+5. The loop repeats until approved.
+
+The default Git workflow is one branch and one worktree per code job. Branch and
+worktree names come from the job spec or `WORKFLOW.md` when provided. If neither
+gives names, use the role file's default naming rule.
+
+Use the target project's existing commit message style. If the target has no
+clear style, use concise scoped messages such as:
+
+```text
+feat(<scope>): add requested behavior
+fix(<scope>): correct specific defect
+docs(<scope>): document durable technical fact
+chore(<scope>): update maintenance artifact
+```
+
+The scope is usually the job ID, feature name, subsystem, or document area.
+Commit messages must describe the integrated change, not the agent process.
 
 ## Continuous Workers
 

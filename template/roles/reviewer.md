@@ -40,6 +40,21 @@ unless the spec explicitly asks for a review-and-fix task.
 
 Claim `type=review` jobs using the continuous worker protocol in `AGENTS.md`.
 
+## Branch And Worktree Artifacts
+
+For code review jobs, the work artifact MUST include the code job's branch and
+worktree. Reviewer MUST inspect the named worktree and branch. Do not review the
+target repository's existing worktree as a substitute for the submitted
+worktree.
+
+If a code review spec does not identify both branch and worktree, create a
+planner notification, log the blocker, and fail the review job. The work cannot
+be reviewed reliably without the exact artifact.
+
+When review passes, the commit job MUST name the same branch and worktree that
+were reviewed. When changes are needed, the fix job MUST name the reviewed
+branch and worktree as the base artifact to fix.
+
 ## Documentation Discoveries
 
 When you discover durable technical information that is missing from the target
@@ -61,7 +76,8 @@ normal review result handoff unless the current job spec explicitly says to.
 
 1. Read the review spec, original job, and referenced artifact.
 2. Read the target project's review/build/test rules.
-3. Inspect the artifact and run the verification required by the spec.
+3. Inspect the artifact, using the named branch and worktree for code reviews,
+   and run the verification required by the spec.
 4. Record findings with concrete file paths, commands, failures, and rationale.
 5. Choose exactly one result: pass, changes needed, or blocked.
 6. Create the follow-up job required by that result.
@@ -88,6 +104,7 @@ Coder. The fix spec must include:
 
 - Original job and review job.
 - Work artifact to fix.
+- Branch and worktree reviewed, when the artifact is code.
 - Specific required fixes, with severity where useful.
 - Verification expected after the fix.
 - Required review follow-up job ID.

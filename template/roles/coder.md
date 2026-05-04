@@ -32,8 +32,42 @@ relevant files and history, and thoroughly explore the parts you do not
 understand. Use the job spec and target project documentation to decide what
 commands, conventions, and verification apply.
 
-Project-specific commands, branch rules, formatting rules, and tests come from
-the job spec and the target project's documentation, not from this role file.
+Project-specific commands, formatting rules, and tests come from the job spec
+and the target project's documentation, not from this role file.
+
+## Branch And Worktree Isolation
+
+For Git-backed implementation work, every code job MUST use one dedicated Git
+branch and one dedicated Git worktree before editing files. This applies to all
+code jobs, including rework/fix jobs created from review feedback. Do not
+implement code jobs in the target repository's existing worktree.
+
+If the job spec or `WORKFLOW.md` gives a branch name, worktree path, branch
+naming pattern, worktree naming pattern, or base commit, use those instructions
+according to the authority order in `AGENTS.md`. If neither gives naming
+instructions, derive them from the job ID:
+
+```text
+branch:  agentws/<job-id>
+worktree: <parent-of-target-repo>/.agentws-worktrees/<target-repo-name>/<job-id>
+base:    target repository HEAD at the time the code job starts
+```
+
+For rework/fix jobs, use the base artifact named by the review spec when it
+provides one. Otherwise, use the target repository HEAD at the time the fix job
+starts. The fix job still gets its own branch and worktree.
+
+The branch and worktree names MUST be recorded in the job log before making
+edits. The review handoff MUST identify the branch and worktree as the primary
+work artifact.
+
+Keep the branch and worktree available for Reviewer and Committer. Do not delete
+or clean up the worktree unless the job spec explicitly assigns cleanup to the
+code job.
+
+If the target is not a Git repository and the job spec does not define a
+non-Git artifact workflow, create a planner notification explaining the missing
+workflow, log the blocker, and fail the code job.
 
 ## Queue
 
@@ -59,15 +93,25 @@ normal code handoff unless the current job spec explicitly says to.
 ## Processing a Code Job
 
 1. Read the full job spec, referenced jobs, and target project rules.
-2. Perform only the implementation work requested by the spec.
-3. Keep project workflow choices inside the spec: branch names, worktree usage,
-   commit policy, staging policy, build commands, and test commands.
-4. Verify the acceptance criteria as far as the environment allows.
-5. Log what changed, where the artifact is, and what verification was run.
-6. Create the required follow-up review job unless the spec explicitly says no
-   review is required.
-7. Complete the code job with `bin/job-done <job-id> -m "<summary>"` only after
-   the follow-up job exists or the spec's alternative handoff is complete.
+2. Create or enter the dedicated branch and worktree for this job.
+3. Perform only the implementation work requested by the spec.
+4. Keep project workflow choices inside the spec: commit policy, staging policy,
+   build commands, and test commands.
+5. Verify the acceptance criteria as far as the environment allows.
+6. Log what changed, where the artifact is, and what verification was run.
+7. Create the required follow-up review job. Review is always required after
+   code work.
+8. Complete the code job with `bin/job-done <job-id> -m "<summary>"` only after
+   the follow-up review job exists.
+
+The code feedback loop is:
+
+```text
+code -> review -> code fix -> review
+```
+
+Repeat that loop until Reviewer approves the work or a role-specific blocker
+requires Planner involvement.
 
 ## Review Handoff
 
@@ -85,7 +129,7 @@ The review spec MUST include:
 <code-job-id>
 
 ## Work Artifact
-<branch, worktree, staged diff, patch, report, or file paths to review>
+<branch and worktree to review; include staged diff, patch, report, or file paths only as additional context>
 
 ## Changes Summary
 <what was implemented or fixed>

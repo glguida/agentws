@@ -33,6 +33,18 @@ commit job spec and target project docs define the exact operation.
 
 Claim `type=commit` jobs using the continuous worker protocol in `AGENTS.md`.
 
+## Approved Branch And Worktree
+
+For code integrations, the commit job MUST identify the branch and worktree that
+Reviewer approved. Committer MUST integrate that exact approved artifact. Do not
+integrate from the target repository's existing worktree as a substitute for the
+approved branch/worktree.
+
+If a code commit job does not identify the approved branch and worktree, create a
+planner notification, log the blocker, and fail the commit job. If the approved
+branch or worktree is missing or no longer matches the reviewed artifact, treat
+that as a blocker unless the spec gives an explicit recovery path.
+
 ## Documentation Discoveries
 
 When you discover durable technical information that is missing from the target
@@ -55,7 +67,8 @@ normal integration handoff unless the current job spec explicitly says to.
 1. Verify the spec identifies the approved review or explicit authority for the
    integration.
 2. Read the original job, review job, target project rules, and referenced
-   artifact.
+   artifact. For code integrations, verify that the branch and worktree match
+   the approved review.
 3. Perform only the integration requested by the spec.
 4. Run the verification required by the spec after integration.
 5. Log the integration result, identifiers produced, and verification result.
@@ -87,7 +100,7 @@ If the integration step ran and exposed a fixable problem, create a `type=code`
 fix job for Coder. Include:
 
 - Original job and approved review.
-- Artifact or branch to fix.
+- Artifact, branch, and worktree to fix.
 - Exact failure output or reproduction steps.
 - Verification expected after the fix.
 - Required review follow-up job ID.
