@@ -62,11 +62,50 @@ protocol.
 file. If the conflict makes the job ambiguous or unsafe, create a notification
 for the responsible coordinating role.
 
+## Target Modification Isolation
+
+Any job that modifies a Git-backed target MUST use a dedicated Git branch and a
+dedicated Git worktree for that job before modifying files. This applies to every
+role, including code, documentation, planning, review-and-fix, integration, and
+cleanup work.
+
+Modification means editing, generating, deleting, staging, committing,
+formatting, applying patches, running code generators that write into the target,
+or running commands that are expected to change target files.
+
+Do not modify the target repository's existing worktree directly. Read-only
+inspection may use the existing worktree. A review job may inspect the submitted
+worktree named by the review spec. If the reviewer performs a review-and-fix task
+or otherwise modifies files, the reviewer MUST use a dedicated branch and
+worktree for that modifying job.
+
+Branch and worktree names come from the job spec or `WORKFLOW.md` when provided.
+If neither gives names, derive them from the job ID:
+
+```text
+branch:  agentws/<job-id>
+worktree: <parent-of-target-repo>/.agentws-worktrees/<target-repo-name>/<job-id>
+base:    target repository HEAD at the time the job starts, unless the spec names another base artifact
+```
+
+Record the branch, worktree, and base in the job log before modifying files. Any
+follow-up job that must inspect, review, fix, or integrate the work MUST receive
+the branch and worktree in its spec.
+
+Keep the branch and worktree available for downstream jobs. Do not delete or
+clean them up unless the current job spec explicitly assigns cleanup to that
+job.
+
+If the target is not Git-backed and the job requires modifications, the job spec
+MUST define an equivalent isolated artifact workflow. If it does not, create a
+notification for the responsible coordinating role, log the blocker, and fail or
+release the job according to the Problem Handling rules.
+
 ## Default Workflow
 
 Use this workflow when `WORKFLOW.md` is absent or silent on a workflow choice.
 If `WORKFLOW.md` gives a different local convention, follow `WORKFLOW.md` unless
-it violates this file's protocol mechanics.
+it violates this file's protocol mechanics or Target Modification Isolation.
 
 Implementation work follows this pipeline:
 
@@ -102,9 +141,9 @@ The default review feedback loop is:
 4. Coder creates a new review job when done.
 5. The loop repeats until approved.
 
-The default Git workflow is one branch and one worktree per code job. Branch and
-worktree names come from the job spec or `WORKFLOW.md` when provided. If neither
-gives names, use the role file's default naming rule.
+The default Git workflow is one branch and one worktree per modifying job.
+Branch and worktree names come from the job spec or `WORKFLOW.md` when provided.
+If neither gives names, use the Target Modification Isolation default.
 
 Use the target project's existing commit message style. If the target has no
 clear style, use concise scoped messages such as:

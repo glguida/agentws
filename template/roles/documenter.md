@@ -75,7 +75,7 @@ include:
 <source job or artifact that reported the undocumented information>
 
 ## Documentation Artifact
-<paths changed, branch/worktree/staged diff, or patch to integrate>
+<branch, worktree, and paths changed; include staged diff or patch only as additional context>
 
 ## Discovery Verified
 <evidence that the documented information is true>
