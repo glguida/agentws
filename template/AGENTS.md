@@ -175,8 +175,15 @@ After a wait timeout, run the same wait command again. Do not run `job-list`, do
 not run `job-claim`, and do not notify the user because of an idle timeout.
 
 If a human/operator explicitly asks a question, answer the question. After
-answering, resume the continuous worker loop unless the human/operator explicitly
-says to stop, pause, or change roles.
+answering, immediately resume the continuous worker loop by running the role's
+idle wait command unless the human/operator explicitly says to stop, pause, or
+change roles. Do not send a final/chat response after answering the operator
+unless they explicitly asked you to stop.
+
+If you find yourself about to summarize idle state, do not summarize. Run the
+role's idle wait command instead. Repeated `job-wait` timeouts, empty wakeups, or
+tool/harness timeouts around the idle wait are normal idle behavior; the next
+action remains the same wait command.
 
 ## Job Directory Layout
 
@@ -450,6 +457,22 @@ Use these global rules unless the role file gives a stricter role-specific rule:
   create a notification for the responsible coordinating role if possible, and
   mark the job failed with `bin/job-fail <job-id> -m "<reason>"` if possible.
 - Never modify another agent's claimed/running job.
+
+## Sandbox Visibility Limits
+
+Some agents run in sandboxes that can read the AgentWS filesystem but cannot see
+the real worker process table. In that environment, PID checks and orphan helper
+output are not authoritative.
+
+When reporting queue status from such a sandbox, describe only the observed
+queue files and logs: job status, owner recorded in `agent.id`, and latest log
+entries. Do not state that a worker is dead, orphaned, or stuck based only on
+`ps`, `pgrep`, `bin/job-orphans`, `bin/job-reap`, or `bin/job-reset-orphans`
+results from the sandbox.
+
+Do not reset, release, fail, or otherwise transition another agent's claimed or
+running job based on apparent sandbox-local process liveness unless a
+human/operator explicitly asks for that recovery action.
 
 ## Status Transitions
 
