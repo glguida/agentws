@@ -2,9 +2,14 @@
 set -euo pipefail
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JOBS_DIR="$AGENTWS_ROOT/jobs"
+. "$AGENTWS_ROOT/bin/lib-agentws"
 
 FILTER="${1:-}"
+[ $# -le 1 ] || die "unexpected argument '$2'"
+
+if [ -n "$FILTER" ]; then
+    require_valid_status "$FILTER"
+fi
 
 if [ ! -d "$JOBS_DIR" ]; then
     echo "No jobs directory found."

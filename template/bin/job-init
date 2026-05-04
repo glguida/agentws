@@ -2,7 +2,7 @@
 set -euo pipefail
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JOBS_DIR="$AGENTWS_ROOT/jobs"
+. "$AGENTWS_ROOT/bin/lib-agentws"
 
 if [ -d "$JOBS_DIR" ]; then
     echo "jobs/ directory already exists."
@@ -14,6 +14,6 @@ fi
 echo "AgentWS initialized at: $AGENTWS_ROOT"
 echo ""
 echo "Next steps:"
-echo "  1. Create a job:  bin/job-create my-first-job -t plan"
-echo "  2. Edit the spec:  \$EDITOR jobs/my-first-job/spec.md"
-echo "  3. Launch agents:  pi \"You are a plan agent.\""
+echo "  1. Write a complete spec:  \$EDITOR /tmp/my-first-job-spec.md"
+echo "  2. Create the job:         bin/job-create my-first-job -t <type> /tmp/my-first-job-spec.md"
+echo "  3. Launch agents with their assigned roles."

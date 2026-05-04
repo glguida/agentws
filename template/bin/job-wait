@@ -2,7 +2,7 @@
 set -euo pipefail
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JOBS_DIR="$AGENTWS_ROOT/jobs"
+. "$AGENTWS_ROOT/bin/lib-agentws"
 
 usage() {
     echo "Usage: job-wait [-t <type>] [--poll <seconds>]"
@@ -21,12 +21,24 @@ POLL_INTERVAL=5
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -t) JOB_TYPE="$2"; shift 2 ;;
-        --poll) POLL_INTERVAL="$2"; shift 2 ;;
+        -t)
+            [ $# -ge 2 ] || die "-t requires a type"
+            JOB_TYPE="$2"
+            shift 2
+            ;;
+        --poll)
+            [ $# -ge 2 ] || die "--poll requires seconds"
+            POLL_INTERVAL="$2"
+            require_nonnegative_integer "--poll" "$POLL_INTERVAL"
+            [ "$POLL_INTERVAL" -gt 0 ] || die "--poll must be greater than zero"
+            shift 2
+            ;;
         --help|-h) usage ;;
         *) echo "error: unknown option '$1'" >&2; usage ;;
     esac
 done
+
+require_jobs_dir
 
 # Check if there's a pending job matching our criteria
 has_pending_job() {

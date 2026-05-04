@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$AGENTWS_ROOT/bin/lib-agentws"
+
+usage() {
+    echo "Usage: job-done <job-id> -m <message>"
+    echo ""
+    echo "Transition a running job to done and release its lock."
+    echo "Required current status: running"
+    echo ""
+    echo "Options:"
+    echo "  -m <message>    Required completion log message"
+    exit 1
+}
+
+JOB_ID=""
+MESSAGE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -m)
+            [ $# -ge 2 ] || die "-m requires a message"
+            MESSAGE="$2"
+            shift 2
+            ;;
+        --help|-h) usage ;;
+        *)
+            if [ -z "$JOB_ID" ]; then
+                JOB_ID="$1"
+            else
+                echo "error: unexpected argument '$1'" >&2
+                usage
+            fi
+            shift
+            ;;
+    esac
+done
+
+[ -n "$JOB_ID" ] || usage
+[ -n "$MESSAGE" ] || die "-m <message> is required"
+
+validate_job_id "$JOB_ID"
+require_jobs_dir
+JOB_DIR="$JOBS_DIR/$JOB_ID"
+
+if [ ! -d "$JOB_DIR" ]; then
+    echo "error: job '$JOB_ID' does not exist" >&2
+    exit 1
+fi
+
+current_status=$(cat "$JOB_DIR/status" 2>/dev/null || echo "unknown")
+if [ "$current_status" != "running" ]; then
+    echo "error: cannot complete job '$JOB_ID' from status '$current_status' (expected: running)" >&2
+    exit 1
+fi
+
+if [ ! -d "$JOB_DIR/lock" ]; then
+    echo "error: cannot complete job '$JOB_ID': missing lock directory" >&2
+    exit 1
+fi
+
+require_owner "complete" "$JOB_ID" "$JOB_DIR"
+
+rmdir "$JOB_DIR/lock" 2>/dev/null || {
+    echo "error: cannot complete job '$JOB_ID': lock directory is not empty" >&2
+    exit 1
+}
+
+echo "done" > "$JOB_DIR/status"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Done ($MESSAGE)" >> "$JOB_DIR/log.md"
+
+echo "$JOB_ID: running -> done"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: agentws/tools/run_agentws.sh [-n] [-m model] [-c config] [session-name]
+Usage: agentws/tools/run_agentws.sh [-n] [-m model] [-c config] [<project-name>]
 
 Start an AgentWS tmux session from the current Git repository.
 
@@ -16,13 +16,17 @@ Options:
   -n          Create the session without attaching.
   -h          Show this help.
 
+Project/session name:
+  If omitted, the tmux session name defaults to agentws-session.
+  For human-run project sessions, pass a project name explicitly.
+
 Config format:
   # comments, inline comments, and blank lines are ignored
   coder-1 coder  # window name, role
 
 Examples:
-  agentws/tools/run_agentws.sh
-  agentws/tools/run_agentws.sh -m sonnet
+  agentws/tools/run_agentws.sh <project-name>
+  agentws/tools/run_agentws.sh -m sonnet <project-name>
   agentws/tools/run_agentws.sh -n -m opus -c /tmp/team tpa-agents
 EOF
 }
@@ -76,7 +80,7 @@ AGENTWS_DIR="$REPO_ROOT/agentws"
 if [ -z "$CONFIG_FILE" ]; then
     CONFIG_FILE="$AGENTWS_DIR/default.team"
 fi
-SESSION_NAME="${1:-agentws-demo}"
+SESSION_NAME="${1:-agentws-session}"
 
 require_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -170,6 +174,7 @@ read_agent_config() {
 validate_agent() {
     local name="$1"
     local role="$2"
+    local role_file
 
     if [[ ! "$name" =~ ^[A-Za-z0-9_.-]+$ ]]; then
         echo "error: invalid agent name '$name' (use letters, numbers, _, ., -)" >&2
@@ -177,6 +182,12 @@ validate_agent() {
     fi
     if [[ ! "$role" =~ ^[A-Za-z0-9_.-]+$ ]]; then
         echo "error: invalid role '$role' for agent '$name' (use letters, numbers, _, ., -)" >&2
+        exit 2
+    fi
+
+    role_file="$AGENTWS_DIR/roles/$role.md"
+    if [ ! -f "$role_file" ]; then
+        echo "error: role '$role' for agent '$name' has no role file: $role_file" >&2
         exit 2
     fi
 }

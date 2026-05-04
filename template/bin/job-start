@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$AGENTWS_ROOT/bin/lib-agentws"
+
+usage() {
+    echo "Usage: job-start <job-id>"
+    echo ""
+    echo "Transition a claimed job to running."
+    echo "Required current status: claimed"
+    exit 1
+}
+
+[ $# -eq 1 ] || usage
+
+JOB_ID="$1"
+validate_job_id "$JOB_ID"
+require_jobs_dir
+JOB_DIR="$JOBS_DIR/$JOB_ID"
+
+if [ ! -d "$JOB_DIR" ]; then
+    echo "error: job '$JOB_ID' does not exist" >&2
+    exit 1
+fi
+
+current_status=$(cat "$JOB_DIR/status" 2>/dev/null || echo "unknown")
+if [ "$current_status" != "claimed" ]; then
+    echo "error: cannot start job '$JOB_ID' from status '$current_status' (expected: claimed)" >&2
+    exit 1
+fi
+
+if [ ! -d "$JOB_DIR/lock" ]; then
+    echo "error: cannot start job '$JOB_ID': missing lock directory" >&2
+    exit 1
+fi
+
+require_owner "start" "$JOB_ID" "$JOB_DIR"
+
+echo "running" > "$JOB_DIR/status"
+echo "$JOB_ID: claimed -> running"

@@ -2,10 +2,12 @@
 set -euo pipefail
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JOBS_DIR="$AGENTWS_ROOT/jobs"
+. "$AGENTWS_ROOT/bin/lib-agentws"
 
-# Get my agent ID (hostname:PID)
-MY_ID="$(hostname -s):$$"
+# Get my agent ID (hostname:agent-pid)
+MY_ID="$(agent_key)"
+
+require_jobs_dir
 
 # Find jobs claimed by me
 for job_dir in "$JOBS_DIR"/*; do

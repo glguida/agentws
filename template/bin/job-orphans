@@ -2,22 +2,28 @@
 set -euo pipefail
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JOBS_DIR="$AGENTWS_ROOT/jobs"
+. "$AGENTWS_ROOT/bin/lib-agentws"
 
-# Find orphaned jobs (claimed/running but PID is dead)
+require_jobs_dir
+
+# Find orphaned jobs (claimed/running but parent-agent PID is dead).
+# NOTE: agent.id stores the parent agent's PID (${PPID}), not this script's PID (\$\$).
+# When the agent process exits, ${PPID} becomes a real orphan signal.
 for job_dir in "$JOBS_DIR"/*; do
     [ -d "$job_dir" ] || continue
 
     status=$(cat "$job_dir/status" 2>/dev/null || echo "")
     if [ "$status" = "claimed" ] || [ "$status" = "running" ]; then
+        job_name=$(basename "$job_dir")
         if [ -f "$job_dir/agent.id" ]; then
             agent_info=$(cat "$job_dir/agent.id")
             pid=$(echo "$agent_info" | cut -d: -f2)
 
             if [ -n "$pid" ] && ! ps -p "$pid" > /dev/null 2>&1; then
-                job_name=$(basename "$job_dir")
                 echo "$job_name (PID $pid dead, status: $status)"
             fi
+        else
+            echo "$job_name (missing agent.id, status: $status)"
         fi
     fi
 done

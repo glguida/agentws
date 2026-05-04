@@ -2,17 +2,15 @@
 set -euo pipefail
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JOBS_DIR="$AGENTWS_ROOT/jobs"
+. "$AGENTWS_ROOT/bin/lib-agentws"
 
 usage() {
-    echo "Usage: job-create <job-id> -t <type> [spec-file]"
+    echo "Usage: job-create <job-id> -t <type> <spec-file>"
     echo ""
-    echo "Create a new job with a given type."
-    echo "If spec-file is provided, it is copied into the job."
-    echo "Otherwise, an empty spec.md is created for you to edit."
+    echo "Create a new job with a given type and complete spec."
+    echo "The spec file is copied into the job before it becomes pending."
     echo ""
-    echo "Types are free-form strings used to route jobs to agents."
-    echo "Examples: code, review, research, refactor, test"
+    echo "Types are free-form strings used to route jobs to roles."
     exit 1
 }
 
@@ -22,13 +20,19 @@ SPEC_FILE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -t) JOB_TYPE="$2"; shift 2 ;;
+        -t)
+            [ $# -ge 2 ] || die "-t requires a type"
+            JOB_TYPE="$2"
+            shift 2
+            ;;
         --help|-h) usage ;;
         *)
             if [ -z "$JOB_ID" ]; then
                 JOB_ID="$1"
-            else
+            elif [ -z "$SPEC_FILE" ]; then
                 SPEC_FILE="$1"
+            else
+                die "unexpected argument '$1'"
             fi
             shift
             ;;
@@ -36,40 +40,26 @@ while [ $# -gt 0 ]; do
 done
 
 [ -z "$JOB_ID" ] && usage
-[ -z "$JOB_TYPE" ] && { echo "error: job type required (-t <type>)" >&2; exit 1; }
+[ -z "$JOB_TYPE" ] && die "job type required (-t <type>)"
+[ -z "$SPEC_FILE" ] && die "spec file required"
+[ "$SPEC_FILE" = "-" ] && die "pass a spec file path, not stdin"
+[ ! -f "$SPEC_FILE" ] && die "spec file '$SPEC_FILE' does not exist"
+[ ! -s "$SPEC_FILE" ] && die "spec file '$SPEC_FILE' is empty"
 
+validate_job_id "$JOB_ID"
+require_jobs_dir
 JOB_DIR="$JOBS_DIR/$JOB_ID"
 
-if [ -d "$JOB_DIR" ]; then
-    echo "error: job '$JOB_ID' already exists" >&2
-    exit 1
+# Atomic mkdir - fails if job dir already exists (prevents TOCTOU race)
+if ! mkdir "$JOB_DIR" 2>/dev/null; then
+    die "job '$JOB_ID' already exists"
 fi
+mkdir "$JOB_DIR/workspace"
+cp "$SPEC_FILE" "$JOB_DIR/spec.md"
 
-mkdir -p "$JOB_DIR/workspace"
-
-if [ -n "$SPEC_FILE" ]; then
-    cp "$SPEC_FILE" "$JOB_DIR/spec.md"
-else
-    cat > "$JOB_DIR/spec.md" <<'EOF'
-# Job Specification
-
-## Objective
-
-<!-- What needs to be done -->
-
-## Acceptance Criteria
-
-<!-- How to know it's done -->
-
-## Notes
-
-<!-- Any additional context -->
-EOF
-fi
-
-echo "pending" > "$JOB_DIR/status"
 echo "$JOB_TYPE" > "$JOB_DIR/type"
 touch "$JOB_DIR/log.md"
+echo "pending" > "$JOB_DIR/status"
 
 echo "created: $JOB_DIR (type: $JOB_TYPE)"
-echo "edit spec: $JOB_DIR/spec.md"
+echo "spec: $JOB_DIR/spec.md"

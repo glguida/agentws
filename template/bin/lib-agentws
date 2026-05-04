@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+
+JOBS_DIR="${JOBS_DIR:-$AGENTWS_ROOT/jobs}"
+VALID_STATUSES="${VALID_STATUSES:-pending claimed running done failed}"
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+validate_job_id() {
+    local id="${1:-}"
+
+    if ! [[ "$id" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        die "invalid job ID '$id' - only alphanumeric, dot, underscore, and hyphen allowed"
+    fi
+}
+
+is_valid_status() {
+    local candidate="${1:-}"
+    local status
+
+    for status in $VALID_STATUSES; do
+        [ "$status" = "$candidate" ] && return 0
+    done
+
+    return 1
+}
+
+require_valid_status() {
+    local status="${1:-}"
+
+    if ! is_valid_status "$status"; then
+        echo "error: invalid status '$status'" >&2
+        echo "valid statuses: $VALID_STATUSES" >&2
+        exit 1
+    fi
+}
+
+require_jobs_dir() {
+    [ -d "$JOBS_DIR" ] || die "jobs directory '$JOBS_DIR' does not exist; run bin/job-init first"
+}
+
+require_nonnegative_integer() {
+    local name="$1"
+    local value="${2:-}"
+
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+        die "$name must be a non-negative integer"
+    fi
+}
+
+read_status() {
+    local job_dir="$1"
+    cat "$job_dir/status" 2>/dev/null || echo "unknown"
+}
+
+agent_pid() {
+    local pid comm parent
+
+    pid="${PPID}"
+    while [ -n "$pid" ] && [ "$pid" != "0" ]; do
+        comm="$(ps -p "$pid" -o comm= 2>/dev/null | tr -d '[:space:]' || true)"
+        case "$comm" in
+            bash|sh|dash|zsh|ksh|fish|timeout|env)
+                parent="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]' || true)"
+                [ -n "$parent" ] || break
+                pid="$parent"
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    echo "$pid"
+}
+
+agent_key() {
+    echo "$(hostname -s):$(agent_pid)"
+}
+
+require_owner() {
+    local action="$1"
+    local job_id="$2"
+    local job_dir="$3"
+    local owner current
+
+    [ -f "$job_dir/agent.id" ] || die "cannot $action job '$job_id': missing agent.id"
+
+    owner="$(cut -d: -f1-2 "$job_dir/agent.id")"
+    current="$(agent_key)"
+
+    if [ "$owner" != "$current" ]; then
+        die "cannot $action job '$job_id': owned by $owner, current agent is $current"
+    fi
+}

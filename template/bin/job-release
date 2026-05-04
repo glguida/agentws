@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$AGENTWS_ROOT/bin/lib-agentws"
+
+usage() {
+    echo "Usage: job-release <job-id> -m <message>"
+    echo ""
+    echo "Release a claimed or running job back to pending status."
+    echo "Required current status: claimed or running"
+    echo "Removes lock, clears owner information, and logs the release."
+    echo ""
+    echo "Options:"
+    echo "  -m <message>    Required log message explaining why job was released"
+    echo ""
+    echo "Examples:"
+    echo "  job-release my-job -m 'dependency not ready'"
+    echo "  job-release my-job -m 'temporary resource unavailable'"
+    exit 1
+}
+
+JOB_ID=""
+MESSAGE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -m)
+            [ $# -ge 2 ] || die "-m requires a message"
+            MESSAGE="$2"
+            shift 2
+            ;;
+        --help|-h) usage ;;
+        *)
+            if [ -z "$JOB_ID" ]; then
+                JOB_ID="$1"
+            else
+                echo "error: unexpected argument '$1'" >&2
+                usage
+            fi
+            shift
+            ;;
+    esac
+done
+
+[ -z "$JOB_ID" ] && usage
+[ -n "$MESSAGE" ] || die "-m <message> is required"
+
+validate_job_id "$JOB_ID"
+require_jobs_dir
+JOB_DIR="$JOBS_DIR/$JOB_ID"
+
+# Check job exists
+if [ ! -d "$JOB_DIR" ]; then
+    echo "error: job '$JOB_ID' does not exist" >&2
+    exit 1
+fi
+
+current_status=$(cat "$JOB_DIR/status" 2>/dev/null || echo "unknown")
+
+case "$current_status" in
+    claimed|running) ;;
+    *)
+        echo "error: cannot release job '$JOB_ID' from status '$current_status' (expected: claimed or running)" >&2
+        exit 1
+        ;;
+esac
+
+if [ ! -d "$JOB_DIR/lock" ]; then
+    echo "error: cannot release job '$JOB_ID': missing lock directory" >&2
+    exit 1
+fi
+
+require_owner "release" "$JOB_ID" "$JOB_DIR"
+
+rmdir "$JOB_DIR/lock" 2>/dev/null || {
+    echo "error: cannot release job '$JOB_ID': lock directory is not empty" >&2
+    exit 1
+}
+
+# Remove owner information
+rm -f "$JOB_DIR/owner"
+rm -f "$JOB_DIR/agent.id"
+
+echo "pending" > "$JOB_DIR/status"
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Released back to pending ($MESSAGE)" >> "$JOB_DIR/log.md"
+
+echo "$JOB_ID: $current_status -> pending"
