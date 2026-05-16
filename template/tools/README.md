@@ -1,9 +1,39 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # AgentWS Tools
 
 This directory contains local helper tools for an installed AgentWS directory.
 
 The shell launchers require `sh` and whichever agent CLI is selected (`pi`,
-`codex`, or `claude`). `tools/agent` uses Python 3 stdlib only.
+`codex`, or `claude`). `tools/agentws` and `tools/agent` use Python 3 stdlib
+only.
+
+## `agentws`
+
+`agentws` is the top-level way to run AgentWS. It starts the built-in `console`
+assistant, the configured team, and the local web interface for the installed
+AgentWS directory. It serves the installed root by default, so from the target
+project root:
+
+```sh
+agentws/tools/agentws
+```
+
+Then open the printed local URL.
+By default, AgentWS starts at `http://127.0.0.1:4137` and increases the port
+until it finds a free one.
+
+Options:
+
+- `--root <path>`: serve a different AgentWS root.
+- `--host <host>`: bind host. Defaults to `127.0.0.1`.
+- `--port <port>`: starting port to bind. AgentWS tries this port and then
+  increasing ports until one is free. Defaults to `4137`.
+- `--verbose`: print agent transcript output in this terminal.
+- `--no-team`: serve the web interface without starting agents.
+- `--no-console`: do not start the built-in console assistant.
+- `--console-model <model>`: pass a model to the built-in console assistant.
+- `[team-file]`: team file to run. Defaults to `agentws/default.team`.
 
 ## `run_agentws`
 
@@ -24,6 +54,17 @@ planner-1 planner pi
 implementer-1 implementer codex
 reviewer-1 reviewer claude sonnet
 ```
+
+Use `pi-interactive` for a Pi agent that keeps the normal AgentWS role and job
+protocol while accepting live messages from the web interface:
+
+```text
+planner-1 planner pi-interactive
+```
+
+The built-in `console` assistant is different: `agentws/tools/agentws` starts it
+automatically as agent `console` with role `console`. It is not listed in the
+team file and has no queued job.
 
 ## `agent`
 
@@ -60,6 +101,20 @@ The agent name is mandatory. `agent` calls `bin/agent-new`, `bin/job-wait`, and
 `bin/job-claim`; the agent itself starts and completes the job according to
 `AGENTS.md`. The rendered transcript is stored only in
 `agents/<agent-name>/transcript.log`; the job log points to that file.
+
+## `agent-pi-interactive`
+
+`agent-pi-interactive` is launched by `run_agentws` for team entries that use
+`pi-interactive`, and by `agentws` itself for the built-in console assistant.
+It starts `pi --mode rpc`, writes the rendered transcript to
+`agents/<agent-name>/transcript.log`, and listens for web input on the agent's
+local `input.fifo`.
+
+Humans normally talk to the built-in console from the `Chat` tab in
+`agentws/tools/agentws`. Return sends the message; Shift+Return inserts a
+newline; `Stop` sends an interrupting steer message. Agent inspectors still
+provide the lower-level transcript view with explicit `Send` and `Steer`
+controls.
 
 ## Task Commands
 

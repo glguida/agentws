@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
 
 JOBS_DIR="${JOBS_DIR:-$AGENTWS_ROOT/jobs}"
 TASKS_DIR="${TASKS_DIR:-$AGENTWS_ROOT/tasks}"

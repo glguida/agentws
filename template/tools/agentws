@@ -1,0 +1,789 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
+import argparse
+import errno
+import json
+import mimetypes
+import os
+import re
+import signal
+import stat
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+
+DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+PUBLIC_DIR = Path(__file__).resolve().parent / "agentws-public"
+DEFAULT_PORT = 4137
+VALID_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+ALLOWED_FILES = {
+    "task": {"log.md", "spec.md", "result.md", "state"},
+    "job": {"log.md", "spec.md", "status", "agent-id", "task-id", "role"},
+    "agent": {
+        "transcript.log",
+        "error.log",
+        "prompt.md",
+        "engine",
+        "role",
+        "current-job",
+        "created_at",
+        "last_started_at",
+    },
+}
+TYPE_DIR = {"task": "tasks", "job": "jobs", "agent": "agents"}
+ROLE_STAGE = {
+    "planner": "plan",
+    "implementer": "build",
+    "reviewer": "review",
+    "committer": "integrate",
+    "console": "console",
+}
+
+
+@dataclass
+class Config:
+    root: Path
+    host: str
+    port: int
+
+
+class AgentWSServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+def bind_server(config: Config):
+    attempts = 100 if config.port else 1
+    last_error = None
+    for offset in range(attempts):
+        port = config.port + offset if config.port else 0
+        try:
+            server = AgentWSServer((config.host, port), ViewerHandler)
+            if offset:
+                print(f"AgentWS port {config.port} was busy; using {port}.", file=sys.stderr)
+            return server
+        except OSError as exc:
+            last_error = exc
+            if exc.errno == errno.EADDRINUSE and offset + 1 < attempts:
+                continue
+            break
+
+    exc = last_error
+    url = f"http://{config.host}:{config.port}"
+    reason = exc.strerror if exc and exc.strerror else str(exc)
+    print(f"error: cannot start AgentWS web interface at {url}: {reason}", file=sys.stderr)
+    if exc and exc.errno == errno.EADDRINUSE:
+        end_port = config.port + attempts - 1
+        print(f"hint: tried ports {config.port}-{end_port}; stop the listener or pass --port <port>.", file=sys.stderr)
+    elif exc and exc.errno in (errno.EACCES, errno.EPERM):
+        print("hint: permission denied while binding; use the default 127.0.0.1 host or choose another port.", file=sys.stderr)
+    elif exc and exc.errno == errno.EADDRNOTAVAIL:
+        print("hint: the requested host is not available on this machine; try --host 127.0.0.1.", file=sys.stderr)
+    return None
+
+
+def server_url(server, config: Config):
+    host = config.host
+    if host in ("", "0.0.0.0", "::"):
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{server.server_address[1]}"
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def iso_from_stat(path: Path):
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat().replace("+00:00", "Z")
+    except OSError:
+        return None
+
+
+def read_text(path: Path, fallback="", max_bytes=256 * 1024, tail=False):
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as stream:
+            if size <= max_bytes:
+                return stream.read().decode("utf-8", "replace")
+            if tail:
+                stream.seek(max(0, size - max_bytes))
+                return "\n[... earlier content truncated ...]\n" + stream.read(max_bytes).decode("utf-8", "replace")
+            return stream.read(max_bytes).decode("utf-8", "replace") + "\n[... content truncated ...]\n"
+    except OSError:
+        return fallback
+
+
+def list_dirs(path: Path, include_hidden=False):
+    try:
+        return sorted(
+            item.name
+            for item in path.iterdir()
+            if item.is_dir() and (include_hidden or not item.name.startswith("."))
+        )
+    except OSError:
+        return []
+
+
+def first_markdown_title(markdown, fallback):
+    match = re.search(r"^#\s+(.+)$", markdown, re.MULTILINE)
+    return match.group(1).strip() if match else titleize(fallback)
+
+
+def titleize(value):
+    return re.sub(r"\b\w", lambda match: match.group(0).upper(), re.sub(r"[-_]+", " ", str(value or "")))
+
+
+def markdown_section(markdown, heading):
+    pattern = re.compile(rf"^##\s+{re.escape(heading)}\s*$([\s\S]*?)(?=^##\s+|\Z)", re.IGNORECASE | re.MULTILINE)
+    match = pattern.search(markdown)
+    return re.sub(r"\n{3,}", "\n\n", match.group(1).strip()) if match else ""
+
+
+def first_paragraph(markdown):
+    body = re.sub(r"^#.+$", "", markdown, count=1, flags=re.MULTILINE)
+    for block in re.split(r"\n{2,}", body):
+        block = block.strip()
+        if block and not block.startswith("##"):
+            return block
+    return ""
+
+
+def short_excerpt(value, length=280):
+    clean = re.sub(r"`([^`]+)`", r"\1", str(value or ""))
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean[: length - 1] + "..." if len(clean) > length else clean
+
+
+def parse_events(markdown):
+    events = []
+    current = None
+    for line in markdown.splitlines():
+        match = re.match(r"^##\s+([0-9T:.-]+Z)\s+-\s+(.+)$", line)
+        if match:
+            if current:
+                current["body"] = current["body"].strip()
+                events.append(current)
+            current = {"timestamp": match.group(1), "title": match.group(2).strip(), "body": ""}
+        elif current:
+            current["body"] += line + "\n"
+    if current:
+        current["body"] = current["body"].strip()
+        events.append(current)
+    return events
+
+
+def date_value(value):
+    if not value:
+        return 0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0
+
+
+def duration_ms(start, end):
+    a = date_value(start)
+    b = date_value(end)
+    return int((b - a) * 1000) if a and b and b >= a else None
+
+
+def infer_stage(job_id, role):
+    lower = job_id.lower()
+    if re.search(r"(^|-)notify(-\d+)?$", job_id):
+        return "notify"
+    if re.search(r"(^|-)(commit|clean-commit)(-\d+)?$", job_id) or re.search(r"(^|-)integrate(?:-[a-z0-9_-]+)?(-\d+)?$", job_id):
+        return "integrate"
+    if re.search(r"(^|-)review(-\d+)?$", job_id):
+        return "review"
+    if re.search(r"(^|-)(impl|implementation|fix|build)(-\d+)?$", job_id):
+        return "build"
+    if re.search(r"(^|-)plan(-\d+)?$", job_id):
+        return "plan"
+    if re.search(r"(^|-)doc", lower):
+        return "docs"
+    if re.search(r"(^|-)rebase($|-)", lower):
+        return "rebase"
+    return ROLE_STAGE.get(role.lower(), "other")
+
+
+def status_rank(status):
+    return {"failed": 0, "running": 1, "claimed": 2, "pending": 3, "done": 4, "unknown": 5}.get(status, 6)
+
+
+def read_tasks(root: Path):
+    tasks = []
+    for task_id in list_dirs(root / "tasks"):
+        task_dir = root / "tasks" / task_id
+        state = read_text(task_dir / "state", "open", 1024).strip() or "open"
+        spec = read_text(task_dir / "spec.md", max_bytes=160 * 1024)
+        log = read_text(task_dir / "log.md", max_bytes=512 * 1024)
+        result_path = task_dir / "result.md"
+        result = read_text(result_path, max_bytes=160 * 1024)
+        events = parse_events(log)
+        last = events[-1] if events else None
+        objective = markdown_section(spec, "Objective") or first_paragraph(spec)
+        tasks.append(
+            {
+                "id": task_id,
+                "title": first_markdown_title(spec, task_id),
+                "state": state,
+                "objective": short_excerpt(objective, 420),
+                "specPreview": short_excerpt(spec, 520),
+                "resultPreview": short_excerpt(result, 520),
+                "hasResult": result_path.exists(),
+                "eventCount": len(events),
+                "events": events,
+                "createdAt": (events[0]["timestamp"] if events else iso_from_stat(task_dir)),
+                "updatedAt": (last["timestamp"] if last else iso_from_stat(task_dir)),
+            }
+        )
+    return tasks
+
+
+def read_jobs(root: Path):
+    jobs = []
+    for job_id in list_dirs(root / "jobs"):
+        job_dir = root / "jobs" / job_id
+        status = read_text(job_dir / "status", "unknown", 1024).strip() or "unknown"
+        task_id = read_text(job_dir / "task-id", max_bytes=1024).strip()
+        role = read_text(job_dir / "role", max_bytes=1024).strip()
+        agent_id = read_text(job_dir / "agent-id", max_bytes=1024).strip()
+        spec = read_text(job_dir / "spec.md", max_bytes=160 * 1024)
+        log = read_text(job_dir / "log.md", max_bytes=512 * 1024)
+        events = parse_events(log)
+        first = events[0] if events else None
+        last = events[-1] if events else None
+        last_text = f"{last.get('title', '') if last else ''} {last.get('body', '') if last else ''}"
+        try:
+            log_size = (job_dir / "log.md").stat().st_size
+        except OSError:
+            log_size = 0
+        jobs.append(
+            {
+                "id": job_id,
+                "title": titleize(job_id),
+                "status": status,
+                "taskId": task_id,
+                "role": role,
+                "agentId": agent_id,
+                "stage": infer_stage(job_id, role),
+                "eventCount": len(events),
+                "events": events,
+                "firstEventAt": first["timestamp"] if first else None,
+                "updatedAt": last["timestamp"] if last else iso_from_stat(job_dir),
+                "durationMs": duration_ms(first["timestamp"] if first else None, last["timestamp"] if last else None),
+                "specPreview": short_excerpt(spec, 420),
+                "latestSummary": short_excerpt((last or {}).get("body") or (last or {}).get("title") or spec, 360),
+                "attention": status == "failed" or bool(re.search(r"blocked|error|failed|superseded", last_text, re.IGNORECASE)),
+                "logSize": log_size,
+            }
+        )
+    return sorted(jobs, key=lambda job: (status_rank(job["status"]), -date_value(job["updatedAt"]), job["id"]))
+
+
+def list_agent_sessions(agent_dir: Path):
+    session_dir = agent_dir / "pi-session"
+    try:
+        return [item.name for item in session_dir.iterdir() if item.is_file() and item.name.endswith(".jsonl")]
+    except OSError:
+        return []
+
+
+def read_agents(root: Path, jobs_by_agent):
+    agents = []
+    team_runs = root / "agents" / ".team-runs"
+    for agent_id in list_dirs(root / "agents"):
+        agent_dir = root / "agents" / agent_id
+        jobs = jobs_by_agent.get(agent_id, [])
+        active_jobs = [job for job in jobs if job["status"] in {"claimed", "running"}]
+        interactive = (agent_dir / "interactive").is_file()
+        input_fifo = agent_dir / "input.fifo"
+        input_ready = is_fifo_writable(input_fifo)
+        agents.append(
+            {
+                "id": agent_id,
+                "name": read_text(agent_dir / "name", agent_id, 2048).strip() or agent_id,
+                "role": read_text(agent_dir / "role", max_bytes=2048).strip(),
+                "engine": read_text(agent_dir / "engine", max_bytes=2048).strip(),
+                "createdAt": read_text(agent_dir / "created_at", max_bytes=2048).strip(),
+                "lastStartedAt": read_text(agent_dir / "last_started_at", max_bytes=2048).strip(),
+                "currentJob": read_text(agent_dir / "current-job", max_bytes=2048).strip(),
+                "active": bool(active_jobs) or (interactive and input_ready),
+                "activeJobIds": [job["id"] for job in active_jobs],
+                "jobCount": len(jobs),
+                "doneJobs": len([job for job in jobs if job["status"] == "done"]),
+                "failedJobs": len([job for job in jobs if job["status"] == "failed"]),
+                "transcriptSize": file_size(agent_dir / "transcript.log"),
+                "errorSize": file_size(agent_dir / "error.log"),
+                "sessionCount": len(list_agent_sessions(agent_dir)),
+                "promptPreview": short_excerpt(read_text(agent_dir / "prompt.md", max_bytes=80 * 1024), 420),
+                "runnerStatus": read_text(team_runs / f"{agent_id}.last-status", max_bytes=2048).strip(),
+                "runnerExit": read_text(team_runs / f"{agent_id}.last-exit", max_bytes=2048).strip(),
+                "interactive": interactive,
+                "inputReady": input_ready,
+                "busy": input_ready and read_text(agent_dir / "busy", max_bytes=64).strip() == "1",
+            }
+        )
+    return sorted(agents, key=lambda agent: (agent["role"], agent["id"]))
+
+
+def file_size(path: Path):
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def is_fifo(path: Path):
+    try:
+        return stat.S_ISFIFO(path.stat().st_mode)
+    except OSError:
+        return False
+
+
+def is_fifo_writable(path: Path):
+    if not is_fifo(path):
+        return False
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    else:
+        os.close(fd)
+        return True
+
+
+def enrich_tasks(tasks, jobs):
+    by_task = {}
+    for job in jobs:
+        by_task.setdefault(job["taskId"], []).append(job)
+
+    for task in tasks:
+        task_jobs = sorted(
+            by_task.get(task["id"], []),
+            key=lambda job: (date_value(job.get("firstEventAt") or job.get("updatedAt")), job["id"]),
+        )
+        cycle_start = task_reopen_timestamp(task)
+        flow_jobs = [job for job in task_jobs if not cycle_start or date_value(job.get("updatedAt")) >= cycle_start]
+        done = len([job for job in task_jobs if job["status"] == "done"])
+        failed = len([job for job in flow_jobs if job["status"] == "failed"])
+        running = len([job for job in flow_jobs if job["status"] in {"running", "claimed"}])
+        pending = len([job for job in flow_jobs if job["status"] == "pending"])
+        attention = failed > 0 or any(job["attention"] for job in flow_jobs)
+        task["jobs"] = [job["id"] for job in task_jobs]
+        task["jobCount"] = len(task_jobs)
+        task["doneJobs"] = done
+        task["failedJobs"] = failed
+        task["runningJobs"] = running
+        task["pendingJobs"] = pending
+        task["roles"] = sorted({job["role"] for job in task_jobs if job["role"]})
+        task["agents"] = sorted({job["agentId"] for job in task_jobs if job["agentId"]})
+        task["flowState"] = infer_task_flow_state(task, flow_jobs, attention)
+        task["progress"] = 100 if task["flowState"] == "closed" else round((done / len(task_jobs)) * 100) if task_jobs else 0
+        task["latestJob"] = max(task_jobs, key=lambda job: date_value(job.get("updatedAt")), default={}).get("id", "")
+        timestamps = [task.get("updatedAt")] + [job.get("updatedAt") for job in task_jobs]
+        task["updatedAt"] = max((value for value in timestamps if value), key=date_value, default=task.get("updatedAt"))
+    return sorted(tasks, key=lambda task: (-date_value(task.get("updatedAt")), task["id"]))
+
+
+def infer_task_flow_state(task, jobs, attention):
+    if is_task_closed(task):
+        return "closed"
+    if attention:
+        return "blocked"
+    if any(job["status"] in {"running", "claimed"} for job in jobs):
+        return "active"
+    pending = [job for job in jobs if job["status"] == "pending"]
+    if any(job["stage"] == "integrate" for job in pending):
+        return "integrate"
+    if any(job["stage"] == "review" for job in pending):
+        return "review"
+    if any(job["stage"] in {"build", "rebase", "docs"} for job in pending):
+        return "active"
+    if any(job["stage"] == "plan" for job in pending):
+        return "planning"
+    if jobs:
+        return "integrate"
+    return "intake"
+
+
+def is_task_closed(task):
+    state = task.get("state", "open")
+    if state and state != "open":
+        return True
+
+    latest_reopen = task_reopen_timestamp(task)
+    latest_result = task_result_timestamp(task)
+    if latest_reopen and latest_reopen >= latest_result:
+        return False
+
+    return task["hasResult"] or bool(latest_result)
+
+
+def task_result_timestamp(task):
+    return max(
+        (date_value(event["timestamp"]) for event in task["events"] if re.search(r"result recorded", event["title"], re.IGNORECASE)),
+        default=0,
+    )
+
+
+def task_reopen_timestamp(task):
+    latest_result = task_result_timestamp(task)
+    latest_reopen = max(
+        (
+            date_value(event["timestamp"])
+            for event in task["events"]
+            if re.search(r"\bstate:\s*open\b", f"{event['title']} {event['body']}", re.IGNORECASE)
+        ),
+        default=0,
+    )
+    return latest_reopen if latest_reopen and latest_reopen >= latest_result else 0
+
+
+def build_activity(tasks, jobs):
+    activity = []
+    for task in tasks:
+        for index, event in enumerate(task["events"]):
+            activity.append(
+                {
+                    "id": f"task:{task['id']}:{index}",
+                    "type": "task",
+                    "itemId": task["id"],
+                    "taskId": task["id"],
+                    "timestamp": event["timestamp"],
+                    "title": event["title"],
+                    "body": short_excerpt(event["body"], 360),
+                    "status": task["flowState"],
+                }
+            )
+    for job in jobs:
+        for index, event in enumerate(job["events"]):
+            activity.append(
+                {
+                    "id": f"job:{job['id']}:{index}",
+                    "type": "job",
+                    "itemId": job["id"],
+                    "taskId": job["taskId"],
+                    "timestamp": event["timestamp"],
+                    "title": event["title"],
+                    "body": short_excerpt(event["body"], 360),
+                    "status": job["status"],
+                    "role": job["role"],
+                    "agentId": job["agentId"],
+                }
+            )
+    return sorted([event for event in activity if event["timestamp"]], key=lambda event: -date_value(event["timestamp"]))[:160]
+
+
+def build_metrics(tasks, jobs, agents):
+    return {
+        "tasksTotal": len(tasks),
+        "tasksByFlow": count_by(tasks, "flowState"),
+        "jobsTotal": len(jobs),
+        "jobsByStatus": count_by(jobs, "status"),
+        "agentsTotal": len(agents),
+        "activeAgents": len([agent for agent in agents if agent["active"]]),
+        "failedJobs": len([job for job in jobs if job["status"] == "failed"]),
+        "attentionTasks": len([task for task in tasks if task["flowState"] == "blocked"]),
+    }
+
+
+def count_by(items, field):
+    result = {}
+    for item in items:
+        key = item.get(field) or "unknown"
+        result[key] = result.get(key, 0) + 1
+    return result
+
+
+def build_snapshot(root: Path):
+    root = root.resolve()
+    missing = [name for name in ("tasks", "jobs", "agents") if not (root / name).is_dir()]
+    if missing:
+        raise ValueError(f"AgentWS root is missing {', '.join(missing)}: {root}")
+
+    tasks_raw = read_tasks(root)
+    jobs = read_jobs(root)
+    jobs_by_agent = {}
+    for job in jobs:
+        if job["agentId"]:
+            jobs_by_agent.setdefault(job["agentId"], []).append(job)
+    agents = read_agents(root, jobs_by_agent)
+    tasks = enrich_tasks(tasks_raw, jobs)
+    return {
+        "root": str(root),
+        "generatedAt": utc_now(),
+        "tasks": tasks,
+        "jobs": jobs,
+        "agents": agents,
+        "activity": build_activity(tasks, jobs),
+        "metrics": build_metrics(tasks, jobs, agents),
+    }
+
+
+class ViewerHandler(BaseHTTPRequestHandler):
+    config: Config
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            self.handle_api(parsed)
+        else:
+            self.serve_static(parsed.path)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            self.handle_api_post(parsed)
+        else:
+            self.send_json(404, {"error": "unknown route"})
+
+    def handle_api(self, parsed):
+        query = parse_qs(parsed.query)
+        root_value = query.get("root", [str(self.config.root)])[0] or str(self.config.root)
+        root = Path(root_value).expanduser()
+        try:
+            if parsed.path == "/api/snapshot":
+                self.send_json(200, build_snapshot(root))
+            elif parsed.path == "/api/file":
+                self.handle_file(root, query)
+            else:
+                self.send_json(404, {"error": "unknown api route"})
+        except Exception as exc:
+            self.send_json(400, {"error": str(exc)})
+
+    def handle_api_post(self, parsed):
+        query = parse_qs(parsed.query)
+        root_value = query.get("root", [str(self.config.root)])[0] or str(self.config.root)
+        root = Path(root_value).expanduser()
+        try:
+            if parsed.path == "/api/agent-input":
+                self.handle_agent_input(root, query)
+            else:
+                self.send_json(404, {"error": "unknown api route"})
+        except Exception as exc:
+            self.send_json(400, {"error": str(exc)})
+
+    def handle_file(self, root: Path, query):
+        item_type = query.get("type", [""])[0]
+        item_id = query.get("id", [""])[0]
+        filename = query.get("file", [""])[0]
+        if item_type not in TYPE_DIR:
+            raise ValueError("invalid type")
+        if not VALID_ID.match(item_id):
+            raise ValueError("invalid id")
+        if filename not in ALLOWED_FILES[item_type]:
+            raise ValueError("invalid file")
+
+        max_bytes = min(int(query.get("maxBytes", ["524288"])[0] or 524288), 2 * 1024 * 1024)
+        tail = query.get("tail", ["0"])[0] == "1"
+        path = root.resolve() / TYPE_DIR[item_type] / item_id / filename
+        if not path.is_file():
+            self.send_json(404, {"error": "file not found"})
+            return
+
+        size = path.stat().st_size
+        self.send_json(
+            200,
+            {
+                "type": item_type,
+                "id": item_id,
+                "file": filename,
+                "path": str(path),
+                "size": size,
+                "truncated": size > max_bytes,
+                "text": read_text(path, max_bytes=max_bytes, tail=tail),
+            },
+        )
+
+    def handle_agent_input(self, root: Path, query):
+        agent_id = query.get("id", [""])[0]
+        if not VALID_ID.match(agent_id):
+            raise ValueError("invalid agent id")
+
+        length = min(int(self.headers.get("Content-Length", "0") or "0"), 64 * 1024)
+        payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        message = str(payload.get("message") or "").strip()
+        mode = str(payload.get("mode") or "follow_up")
+        if not message:
+            raise ValueError("message is required")
+        if mode not in {"follow_up", "steer", "prompt"}:
+            raise ValueError("invalid mode")
+
+        agent_dir = root.resolve() / "agents" / agent_id
+        if not (agent_dir / "interactive").is_file():
+            self.send_json(409, {"error": "agent is not interactive"})
+            return
+        input_fifo = agent_dir / "input.fifo"
+        if not is_fifo(input_fifo):
+            self.send_json(409, {"error": "interactive input is not ready"})
+            return
+
+        line = json.dumps({"message": message, "mode": mode}) + "\n"
+        try:
+            fd = os.open(input_fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            if exc.errno == errno.ENXIO:
+                self.send_json(409, {"error": "interactive agent is not listening; restart AgentWS or wait for the console to finish starting"})
+                return
+            self.send_json(409, {"error": f"interactive input is not available: {exc.strerror}"})
+            return
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+        self.send_json(200, {"ok": True})
+
+    def serve_static(self, raw_path):
+        relative = unquote(raw_path.lstrip("/")) or "index.html"
+        if relative == "":
+            relative = "index.html"
+        requested = (PUBLIC_DIR / relative).resolve()
+        try:
+            requested.relative_to(PUBLIC_DIR.resolve())
+        except ValueError:
+            self.send_error(403)
+            return
+        if not requested.is_file():
+            requested = PUBLIC_DIR / "index.html"
+        content_type = mimetypes.guess_type(str(requested))[0] or "application/octet-stream"
+        payload = requested.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def send_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def start_team(root: Path, team_file, verbose: bool):
+    runner = root / "tools" / "run_agentws"
+    if not runner.is_file():
+        raise ValueError(f"AgentWS runner not found: {runner}")
+
+    command = [str(runner)]
+    if verbose:
+        command.append("--verbose")
+    if team_file:
+        command.append(team_file)
+
+    proc = subprocess.Popen(command, cwd=root, start_new_session=True)
+    time.sleep(0.2)
+    rc = proc.poll()
+    if rc is not None:
+        raise RuntimeError(f"AgentWS team exited early with status {rc}")
+    return proc
+
+
+def start_console(root: Path, model: str | None, verbose: bool):
+    console = root / "tools" / "agent-pi-interactive"
+    if not console.is_file():
+        raise ValueError(f"AgentWS console runner not found: {console}")
+
+    command = [str(console), "--console"]
+    if not verbose:
+        command.append("--headless")
+    if model:
+        command.extend(["--model", model])
+
+    proc = subprocess.Popen(command, cwd=root, start_new_session=True)
+    time.sleep(0.2)
+    rc = proc.poll()
+    if rc is not None:
+        raise RuntimeError(f"AgentWS console exited early with status {rc}")
+    return proc
+
+
+def stop_team(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="AgentWS runner and local web interface")
+    parser.add_argument("--root", default=os.environ.get("AGENTWS_ROOT", str(DEFAULT_ROOT)), help="AgentWS root directory")
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"), help="Bind host (default: 127.0.0.1)")
+    default_port = int(os.environ["PORT"]) if "PORT" in os.environ else DEFAULT_PORT
+    parser.add_argument(
+        "--port",
+        default=default_port,
+        type=int,
+        help=f"Bind starting port (default: first free port at or above {DEFAULT_PORT})",
+    )
+    parser.add_argument("--no-team", action="store_true", help="serve the web interface without starting agents")
+    parser.add_argument("--no-console", action="store_true", help="do not start the built-in console agent")
+    parser.add_argument("--console-model", help="model to pass to the built-in console agent")
+    parser.add_argument("--verbose", action="store_true", help="print agent transcript output in this terminal")
+    parser.add_argument("team_file", nargs="?", help="team file to run; defaults to agentws/default.team")
+    args = parser.parse_args()
+
+    config = Config(root=Path(args.root).expanduser().resolve(), host=args.host, port=args.port)
+    ViewerHandler.config = config
+
+    team_proc = None
+    console_proc = None
+    server = bind_server(config)
+    if server is None:
+        return 1
+
+    def request_stop(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, request_stop)
+
+    try:
+        if not args.no_team:
+            if not args.no_console:
+                console_proc = start_console(config.root, args.console_model, args.verbose)
+                print(f"AgentWS console started pid={console_proc.pid}")
+            team_proc = start_team(config.root, args.team_file, args.verbose)
+            print(f"AgentWS team started pid={team_proc.pid}")
+
+        print(f"AgentWS running at {server_url(server, config)}")
+        print(f"Reading AgentWS root: {config.root}")
+        server.serve_forever()
+        return 0
+    except KeyboardInterrupt:
+        print("\nStopping.")
+        return 0
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        server.server_close()
+        stop_team(team_proc)
+        stop_team(console_proc)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

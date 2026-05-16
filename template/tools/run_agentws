@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,7 +17,7 @@ Run the named AgentWS team. Team file format:
   <name> <role> <agent> [model]
 
 If team-file is omitted, agentws/default.team is used. Blank lines and #
-comments are ignored. Agent is one of: pi, codex, claude.
+comments are ignored. Agent is one of: pi, pi-interactive, codex, claude.
 
 Options:
   --verbose   Print each agent's rendered transcript output to this terminal.
@@ -28,8 +29,32 @@ agent_flag() {
         pi) echo "--pi" ;;
         codex) echo "--codex" ;;
         claude) echo "--claude" ;;
-        *) die "invalid agent '$1' in team file; expected pi, codex, or claude" ;;
+        *) die "invalid agent '$1' in team file; expected pi, pi-interactive, codex, or claude" ;;
     esac
+}
+
+run_agent_once() {
+    headless_arg="$1"
+    agent="$2"
+    model="$3"
+    role="$4"
+    name="$5"
+
+    if [ "$agent" = "pi-interactive" ]; then
+        if [ -n "$model" ]; then
+            "$SCRIPT_DIR/agent-pi-interactive" $headless_arg -m "$model" "$role" "$name"
+        else
+            "$SCRIPT_DIR/agent-pi-interactive" $headless_arg "$role" "$name"
+        fi
+        return
+    fi
+
+    flag="$(agent_flag "$agent")"
+    if [ -n "$model" ]; then
+        "$SCRIPT_DIR/agent" $headless_arg "$flag" -m "$model" "$role" "$name"
+    else
+        "$SCRIPT_DIR/agent" $headless_arg "$flag" "$role" "$name"
+    fi
 }
 
 VERBOSE=0
@@ -100,17 +125,15 @@ while IFS= read -r line || [ -n "$line" ]; do
 
     validate_agent_id "$name"
     validate_role "$role"
-    flag="$(agent_flag "$agent")"
+    if [ "$agent" != "pi-interactive" ]; then
+        agent_flag "$agent" >/dev/null
+    fi
 
     (
         while :; do
             headless_arg="--headless"
             [ "$VERBOSE" -eq 1 ] && headless_arg=""
-            if [ -n "$model" ]; then
-                "$SCRIPT_DIR/agent" $headless_arg "$flag" -m "$model" "$role" "$name"
-            else
-                "$SCRIPT_DIR/agent" $headless_arg "$flag" "$role" "$name"
-            fi
+            run_agent_once "$headless_arg" "$agent" "$model" "$role" "$name"
             rc="$?"
             printf '%s\n' "$rc" > "$RUN_DIR/$name.last-status" 2>/dev/null || true
             printf '%s\n' "$(timestamp)" > "$RUN_DIR/$name.last-exit" 2>/dev/null || true

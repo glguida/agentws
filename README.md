@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # AgentWS
 
 A git-friendly, human-readable workspace for coordinating AI agents. AgentWS
@@ -15,15 +17,23 @@ From your project, ask your coding agent to install AgentWS from GitHub:
 Install AgentWS here from https://github.com/glguida/agentws.
 ```
 
-Start the AgentWS team. Use `--verbose` when you want to see agent output in
-the terminal:
+Run AgentWS:
 
 ```sh
-agentws/tools/run_agentws --verbose
+agentws/tools/agentws
 ```
 
-Use `agentws/tools/run_agentws` without `--verbose` for quieter background
-runs; transcripts are still written under `agentws/agents/`.
+This starts the built-in `console` assistant, the configured team, and the
+local web interface. By default it listens on the first free port at or above
+`127.0.0.1:4137` and prints the local URL to open. Use `--verbose` when you
+want to see agent output in the terminal:
+
+```sh
+agentws/tools/agentws --verbose
+```
+
+Without `--verbose`, agents still run and transcripts are written under
+`agentws/agents/`.
 
 Then work out a task with your coding agent and tell it to dispatch the task to
 AgentWS:
@@ -34,9 +44,11 @@ Dispatch this task to AgentWS.
 
 The coding agent should read the rest of this README and use the AgentWS tools.
 
-Watch progress:
+Watch progress in the local web interface, or with the lower-level files and
+commands:
 
 ```sh
+agentws/tools/agentws
 agentws/bin/job-list
 tail -f agentws/tasks/<task-id>/log.md
 tail -f agentws/agents/<agent-name>/transcript.log
@@ -50,8 +62,9 @@ from GitHub and install the local template exactly as shown below.
 Install from the target project root:
 
 ```sh
-git clone https://github.com/glguida/agentws.git /tmp/agentws
-cp -r /tmp/agentws/template ./agentws
+tmp="$(mktemp -d)"
+git clone https://github.com/glguida/agentws.git "$tmp/agentws"
+cp -r "$tmp/agentws/template" ./agentws
 agentws/bin/job-init
 printf '%s\n' "agentws/tasks/" "agentws/jobs/" "agentws/agents/" >> .gitignore
 ```
@@ -85,11 +98,10 @@ agentws/agents/
 When done, tell the human:
 
 ```sh
-agentws/tools/run_agentws --verbose
+agentws/tools/agentws
 ```
 
-They can run `agentws/tools/run_agentws` without `--verbose` if they do not want
-agent output printed in the terminal.
+They can add `--verbose` if they want agent output printed in the terminal.
 
 Tasks are dispatched with the installed `task-create` tool:
 
@@ -115,21 +127,21 @@ template/roles/planner.md
 template/roles/implementer.md
 template/roles/reviewer.md
 template/roles/committer.md
+template/roles/console.md
 ```
 
 Install:
 
 ```sh
-git clone https://github.com/glguida/agentws.git /tmp/agentws
-cp -r /tmp/agentws/template ./agentws
+tmp="$(mktemp -d)"
+git clone https://github.com/glguida/agentws.git "$tmp/agentws"
+cp -r "$tmp/agentws/template" ./agentws
 agentws/bin/job-init
 printf '%s\n' "agentws/tasks/" "agentws/jobs/" "agentws/agents/" >> .gitignore
 ```
 
-AgentWS expects `sh`, Python 3, and whichever agent CLI the team file uses
-(`pi`, `codex`, or `claude`) to be available on `PATH`. `agentws/tools/agent`
-uses Python 3 stdlib only. Python tools are executable scripts with
-`#!/usr/bin/env python3`; do not run or install them through compilation steps.
+Requirements are summarized near the bottom of this README. There is no Python
+package install or build step.
 
 Commit or otherwise keep the reusable project configuration:
 
@@ -156,16 +168,25 @@ After install, create work with:
 agentws/bin/task-create <task-id> <spec-file>
 ```
 
-Then start the configured team:
+Run AgentWS:
 
 ```sh
-agentws/tools/run_agentws --verbose
+agentws/tools/agentws
 ```
 
-For a quiet run, omit `--verbose`:
+This starts the built-in `console` assistant, the configured team, and the
+local web interface. By default it listens on the first free port at or above
+`127.0.0.1:4137` and prints the local URL to open. For live terminal agent
+output, add `--verbose`:
 
 ```sh
-agentws/tools/run_agentws
+agentws/tools/agentws --verbose
+```
+
+For a read-only web interface without starting agents, use:
+
+```sh
+agentws/tools/agentws --no-team
 ```
 
 ## How It Works
@@ -229,6 +250,12 @@ agents/<agent-name>/
   error.log
 ```
 
+The top-level local interface is `agentws/tools/agentws`. It starts the
+built-in `console` assistant, starts the configured team, serves the installed
+AgentWS root by default, and reads task, job, and agent state from the local
+runtime directories. `run_agentws` remains available as the lower-level team
+runner.
+
 Agent output is appended to `agents/<agent-name>/transcript.log`. The Python
 runner renders structured JSON events into a readable transcript instead of
 saving raw JSON. Job logs point to the agent transcript and remain short
@@ -286,7 +313,16 @@ reviewer-1 reviewer pi
 committer-1 committer pi
 ```
 
-The agent field is one of `pi`, `codex`, or `claude`.
+The agent field is one of `pi`, `pi-interactive`, `codex`, or `claude`.
+`pi-interactive` keeps the normal role/job protocol but also exposes a live
+transcript and message box in the local web interface.
+
+The built-in `console` assistant is started by `agentws/tools/agentws` itself.
+It is not a team-file entry and does not have a queued job. It uses the
+`console` role to help the human draft task specs, dispatch tasks, and inspect
+or manage the local AgentWS system. The web interface exposes it in the `Chat`
+tab for normal use. Agent inspectors still provide the lower-level transcript
+view with explicit `Send` and `Steer` controls.
 
 ## Roles
 
@@ -301,9 +337,23 @@ agentws/roles/
 - `implementer`: does concrete work and creates reviewer jobs.
 - `reviewer`: reviews artifacts and routes pass/fix/blocker outcomes.
 - `committer`: integrates approved work locally.
+- `console`: interactive assistant for task intake and AgentWS management.
 
 Documentation updates are routed by planner through implementer, reviewer, and
 committer.
+
+## Requirements
+
+- `sh`
+- Python 3
+- `pi` on `PATH` for the default team and built-in console
+- optional: `codex` or `claude` on `PATH` only if the team file is changed to
+  use those agent types
+- a browser for the local `agentws/tools/agentws` web interface
+
+`agentws/tools/agentws` and `agentws/tools/agent` use Python 3 stdlib only.
+Python tools are executable scripts with `#!/usr/bin/env python3`; do not run or
+install them through compilation steps.
 
 ## Commands
 
@@ -317,12 +367,14 @@ agentws/bin/task-result <task-id> <result-file>
 agentws/bin/task-list
 agentws/bin/job-create <job-id> -r <role> -t <task-id> <spec-file>
 agentws/bin/job-list [status]
+agentws/tools/agentws [--no-team] [--no-console] [--verbose] [--root path] [--host host] [--port port] [team-file]
 agentws/tools/run_agentws [--verbose] [team-file]
 agentws/tools/agent [--pi|--codex|--claude] [--headless] [-m model] <role> <agent-name>
+agentws/tools/agent-pi-interactive [--console] [--headless] [-m model] [role] [agent-name]
 ```
 
 Lower-level job helper behavior is described in `agentws/AGENTS.md`.
 
 ## License
 
-Public domain. Use it however you want.
+MIT. See [LICENSE](LICENSE).
