@@ -1,15 +1,8 @@
-# Default AgentWS team.
-#
-# Format:
-#   <tmux-window-name> <agent-role>
-#
-# agentws/tools/run_agentws.sh sends each agent the prompt:
-#   You are a <agent-role>
+# AgentWS team file
+# Format: <name> <role> <agent> [model]
+# Agent is one of: pi, codex, claude
 
-planner planner
-coder-1 coder
-coder-2 coder
-reviewer-1 reviewer
-reviewer-2 reviewer
-committer committer
-documenter documenter
+planner-1 planner pi
+implementer-1 implementer pi
+reviewer-1 reviewer pi
+committer-1 committer pi

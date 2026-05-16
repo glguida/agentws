@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$AGENTWS_ROOT/bin/lib-agentws"
@@ -8,43 +8,41 @@ require_jobs_dir
 
 count=0
 
-# Reset orphaned jobs (claimed/running but parent-agent PID is dead).
-# NOTE: agent.id stores the parent agent's PID (${PPID}), not this script's PID (\$\$).
-# When the agent process exits, ${PPID} becomes a real orphan signal.
 for job_dir in "$JOBS_DIR"/*; do
     [ -d "$job_dir" ] || continue
+    [ -f "$job_dir/status" ] || continue
 
-    status=$(cat "$job_dir/status" 2>/dev/null || echo "")
-    if [ "$status" = "claimed" ] || [ "$status" = "running" ]; then
-        job_name=$(basename "$job_dir")
-        if [ -f "$job_dir/agent.id" ]; then
-            agent_info=$(cat "$job_dir/agent.id")
-            pid=$(echo "$agent_info" | cut -d: -f2)
+    status="$(cat "$job_dir/status" 2>/dev/null || true)"
+    case "$status" in
+        claimed|running) ;;
+        *) continue ;;
+    esac
 
-            if [ -n "$pid" ] && ! ps -p "$pid" > /dev/null 2>&1; then
-                echo "Resetting orphaned job: $job_name (PID $pid dead)"
+    job_name="$(basename "$job_dir")"
+    reset_reason=""
 
-                # Reset to pending
-                if [ -d "$job_dir/lock" ] && ! rmdir "$job_dir/lock" 2>/dev/null; then
-                    echo "error: cannot reset orphaned job '$job_name': lock directory is not empty" >&2
-                    continue
-                fi
-                rm -f "$job_dir/agent.id"
-                echo "pending" > "$job_dir/status"
-                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Reset by job-reset-orphans (orphaned PID $pid)" >> "$job_dir/log.md"
-                count=$((count + 1))
-            fi
-        else
-            echo "Resetting corrupt active job: $job_name (missing agent.id)"
-            if [ -d "$job_dir/lock" ] && ! rmdir "$job_dir/lock" 2>/dev/null; then
-                echo "error: cannot reset corrupt job '$job_name': lock directory is not empty" >&2
-                continue
-            fi
-            echo "pending" > "$job_dir/status"
-            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Reset by job-reset-orphans (missing agent.id)" >> "$job_dir/log.md"
-            count=$((count + 1))
+    if [ ! -f "$job_dir/agent-id" ]; then
+        reset_reason="missing agent-id"
+    else
+        agent_id="$(cat "$job_dir/agent-id" 2>/dev/null || true)"
+        if [ -z "$agent_id" ]; then
+            reset_reason="empty agent-id"
+        elif [ ! -d "$AGENTWS_ROOT/agents/$agent_id" ]; then
+            reset_reason="agent '$agent_id' has no agents/$agent_id directory"
         fi
     fi
+
+    [ -n "$reset_reason" ] || continue
+
+    echo "Resetting orphaned job: $job_name ($reset_reason)"
+    if [ -d "$job_dir/lock" ] && ! rmdir "$job_dir/lock" 2>/dev/null; then
+        echo "error: cannot reset orphaned job '$job_name': lock directory is not empty" >&2
+        continue
+    fi
+    rm -f "$job_dir/agent-id"
+    write_file_atomic "$job_dir/status" "pending"
+    append_log "$job_dir" "Reset by job-reset-orphans" "$reset_reason."
+    count=$((count + 1))
 done
 
 if [ "$count" -eq 0 ]; then

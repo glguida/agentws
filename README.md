@@ -1,430 +1,327 @@
-# AgentWS (Agent Workspace)
+# AgentWS
 
-A git-friendly, human-readable, agent-native workspace for coordinating AI agents. No database, no server, no
-framework — just directories, files, and bash.
+A git-friendly, human-readable workspace for coordinating AI agents. AgentWS
+uses Markdown files, shell scripts, and directories so task state, role
+instructions, and job handoffs stay inspectable with ordinary tools.
 
-AgentWS lets multiple AI agents work concurrently on independent jobs,
-coordinating entirely through the filesystem. It works on local disks,
-NFS, sshfs, or any shared mount.
+AgentWS gives a project durable task state, project-specific agent roles, and a
+job queue that coding agents can inspect and operate locally.
 
 ## TL;DR for Humans
 
-AgentWS is a tiny way to give AI agents durable, project-specific roles without
-running a server or adopting a framework.
-
-- **Roles are customizable.** Start with planner, coder, reviewer, and
-  committer, then edit them or add your own roles for your project.
-- **Roles live in git as Markdown.** The instructions are ordinary `.md` files
-  in `roles/`, so they can be reviewed, versioned, branched, and changed with
-  the rest of the repo.
-- **Agents are easy to launch.** Start the configured team from the project
-  root:
-
-```bash
-agentws/tools/run_agentws.sh
-```
-
-The launcher reads `agentws/default.team`, opens one tmux window per configured
-agent, and starts each one with a minimal role prompt such as
-`You are a coder`. Each agent reads the matching role file, claims jobs from
-the filesystem queue, logs what it did, and hands work to the next role.
-
-For day-to-day use, see `PRACTICAL.md`: launch the team, use your favorite
-coding agent to choose the feature and create a plan job, then watch the team
-plan, implement, review, and commit it.
-
-### How to install in your project
-
-To add AgentWS to an existing repository, open an agent in that repository and
-point it at the AgentWS repo:
+From your project, ask your coding agent to install AgentWS from GitHub:
 
 ```text
-Install AgentWS in this repository using https://github.com/glguida/agentws.
-Read the AgentWS README, create an agentws/ directory from the template,
-initialize it, and commit the reusable configuration.
-
-Add agentws/jobs/ to this project's .gitignore so runtime jobs are not
-committed.
+Install AgentWS here from https://github.com/glguida/agentws.
 ```
 
-This gives your project a committed `agentws/` directory with `AGENTS.md`,
-`roles/`, `bin/`, `tools/`, and `default.team`, while keeping runtime job state
-out of git.
+Start the AgentWS team. Use `--verbose` when you want to see agent output in
+the terminal:
 
-The standard roles are:
+```sh
+agentws/tools/run_agentws --verbose
+```
 
-- `planner` - breaks goals into concrete jobs
-- `coder` - implements code changes
-- `reviewer` - reviews completed code
-- `committer` - merges approved work
+Use `agentws/tools/run_agentws` without `--verbose` for quieter background
+runs; transcripts are still written under `agentws/agents/`.
 
-After that, customize the role files in `agentws/roles/` and the team file in
-`agentws/default.team` like any other project documentation, then launch the
-configured team:
+Then work out a task with your coding agent and tell it to dispatch the task to
+AgentWS:
 
-```bash
-agentws/tools/run_agentws.sh
+```text
+Dispatch this task to AgentWS.
+```
+
+The coding agent should read the rest of this README and use the AgentWS tools.
+
+Watch progress:
+
+```sh
+agentws/bin/job-list
+tail -f agentws/tasks/<task-id>/log.md
+tail -f agentws/agents/<agent-name>/transcript.log
 ```
 
 ## TL;DR for Agents
 
-**If you're an AI agent being asked to use agentws:**
+If you are an AI agent asked to install AgentWS in a repository, clone AgentWS
+from GitHub and install the local template exactly as shown below.
 
-1. **Set it up** (if not already done):
-```bash
-git clone https://github.com/glguida/agentws.git
-cp -r agentws/template/ ./agentws/
-cd agentws/
-bin/job-init
+Install from the target project root:
+
+```sh
+git clone https://github.com/glguida/agentws.git /tmp/agentws
+cp -r /tmp/agentws/template ./agentws
+agentws/bin/job-init
+printf '%s\n' "agentws/tasks/" "agentws/jobs/" "agentws/agents/" >> .gitignore
 ```
 
-2. **Create your first job**:
-```bash
-bin/job-create initial-task -t plan
-# Edit jobs/initial-task/spec.md with the goal
-```
-
-3. **Launch agents** (tell your human to launch the configured team):
-```bash
-agentws/tools/run_agentws.sh
-```
-
-That's it. The planner breaks your goal into sub-jobs, workers pick
-them up as they appear, and the chain flows through the queue.
-
-## Roles
-
-The template includes standard development roles in `template/roles/`:
-
-- **planner.md** - Breaks down goals into concrete tasks
-- **coder.md** - Implements features in git branches, must build
-- **reviewer.md** - Reviews code quality, doesn't merge
-- **committer.md** - Merges approved code, verifies integration
-
-Humans usually launch the configured team with:
-```bash
-agentws/tools/run_agentws.sh
-```
-
-The launcher reads `agentws/default.team`. Each row names a tmux window and an
-agent role:
+The runtime directories must be added to `.gitignore`:
 
 ```text
-coder-1 coder
+agentws/tasks/
+agentws/jobs/
+agentws/agents/
 ```
 
-It sends only the matching role prompt:
+Keep these project configuration files:
 
 ```text
-You are a coder
+agentws/AGENTS.md
+agentws/default.team
+agentws/roles/
+agentws/bin/
+agentws/tools/
 ```
 
-You can still launch one agent manually with the role name:
-```bash
-cd agentws
-pi "You are a coder"
+Do not commit runtime state; it must be ignored in `.gitignore`:
+
+```text
+agentws/tasks/
+agentws/jobs/
+agentws/agents/
 ```
 
-The bundled launcher uses `pi` from pi.dev because that is the default local
-agent CLI for this workflow. AgentWS itself is CLI-agnostic: any coding-agent
-CLI that reads local instructions can be used the same way, as long as it starts
-inside `agentws/` with a role prompt such as `You are a coder`.
+When done, tell the human:
 
-The agent will read the matching role document. If you are an agent reading
-this, do not launch other agents yourself; tell your human which roles to
-launch. Projects can customize these roles or add new ones. The role documents
-contain the detailed workflows, quality standards, and handoff procedures.
+```sh
+agentws/tools/run_agentws --verbose
+```
 
-## Why
+They can run `agentws/tools/run_agentws` without `--verbose` if they do not want
+agent output printed in the terminal.
 
-Modern multi-agent frameworks (CrewAI, AutoGen, LangGraph) run agents
-in-process. They're tightly coupled, hard to resume, and tied to a
-specific runtime. If the process dies, the work is lost.
+Tasks are dispatched with the installed `task-create` tool:
 
-AgentWS (Agent Workspace) takes a different approach:
+```sh
+agentws/bin/task-create <task-id> <spec-file>
+```
 
-- **Agents are independent processes.** Each agent is a separate CLI
-  session (pi.dev, claude, cursor — anything that reads `AGENTS.md`).
-  They don't share memory. They coordinate through files.
+If asked to dispatch work to AgentWS, create a complete task spec file and run
+`task-create`.
 
-- **Everything is inspectable.** `cat jobs/foo/status` tells you the
-  state. `cat jobs/foo/log.md` tells you what happened. No dashboards,
-  no APIs — just `ls` and `cat`.
+## Full Install Reference
 
-- **Work survives crashes.** If an agent dies, the job stays on disk.
-  Another agent can pick it up and resume from the log. A reaper script
-  reclaims stale jobs automatically.
+AgentWS has one install template:
 
-- **Works anywhere files work.** Local disk, NFS, sshfs, Dropbox, a USB
-  stick. No ports to open, no services to run.
+```text
+template    local task folders, local job queue, standard roles, committer workflow
+```
 
-- **Role routing via job types.** Run as many planners, coders, reviewers,
-  and committers as you need. Each agent claims only jobs matching its role.
+Role definitions are included in the template:
 
-- **Dependencies without a DAG engine.** The planner encodes workflow as
-  natural language in each job's spec: "When done, create a review job."
-  No scheduler, no graph — agents just follow their instructions.
+```text
+template/roles/planner.md
+template/roles/implementer.md
+template/roles/reviewer.md
+template/roles/committer.md
+```
+
+Install:
+
+```sh
+git clone https://github.com/glguida/agentws.git /tmp/agentws
+cp -r /tmp/agentws/template ./agentws
+agentws/bin/job-init
+printf '%s\n' "agentws/tasks/" "agentws/jobs/" "agentws/agents/" >> .gitignore
+```
+
+AgentWS expects `sh`, Python 3, and whichever agent CLI the team file uses
+(`pi`, `codex`, or `claude`) to be available on `PATH`. `agentws/tools/agent`
+uses Python 3 stdlib only. Python tools are executable scripts with
+`#!/usr/bin/env python3`; do not run or install them through compilation steps.
+
+Commit or otherwise keep the reusable project configuration:
+
+```text
+.gitignore
+agentws/AGENTS.md
+agentws/default.team
+agentws/roles/
+agentws/bin/
+agentws/tools/
+```
+
+Do not commit runtime state. These paths must be in `.gitignore`:
+
+```text
+agentws/tasks/
+agentws/jobs/
+agentws/agents/
+```
+
+After install, create work with:
+
+```sh
+agentws/bin/task-create <task-id> <spec-file>
+```
+
+Then start the configured team:
+
+```sh
+agentws/tools/run_agentws --verbose
+```
+
+For a quiet run, omit `--verbose`:
+
+```sh
+agentws/tools/run_agentws
+```
 
 ## How It Works
 
-```
-jobs/
-  my-feature/
-    spec.md        # What to do (immutable)
-    type           # Job type: plan, code, review, test, ...
-    status         # pending → claimed → running → review → done
-    agent.id       # Who claimed it
-    log.md         # Append-only work log
-    workspace/     # Scratch area
+The model is:
+
+```text
+task -> jobs -> named agent runs
 ```
 
-1. A human (or agent) creates a job with `bin/job-create`.
-2. An agent claims it with `bin/job-claim` (atomic `mkdir` lock — NFS-safe).
-3. The agent reads `spec.md`, does the work, logs to `log.md`.
-4. The agent follows the spec's "When Done" section — maybe mark done,
-   maybe create a follow-up job for another agent.
-
-## Setup
-
-### 1. Get agentws
-
-```bash
-git clone https://github.com/glguida/agentws.git
+```text
+agentws/
+  AGENTS.md
+  default.team
+  roles/
+  bin/
+  tools/
+  tasks/
+  jobs/
+  agents/
 ```
 
-### 2. Copy the template into your project
+Only `AGENTS.md`, `default.team`, `roles/`, `bin/`, and `tools/` are
+project configuration. `tasks/`, `jobs/`, and `agents/` are runtime state and
+must be ignored.
 
-```bash
-cp -r agentws/template/ /path/to/my-project/agentws/
-cd /path/to/my-project/agentws/
-bin/job-init
+A task is the long-lived objective:
+
+```text
+tasks/<task-id>/
+  spec.md
+  state
+  log.md
+  result.md
 ```
 
-### 3. Add jobs/ to your project's .gitignore
+A job is one role-scoped unit of work inside a task:
 
-```bash
-cd /path/to/my-project/
-echo "agentws/jobs/" >> .gitignore
+```text
+jobs/<job-id>/
+  task-id
+  role
+  spec.md
+  status
+  agent-id
+  log.md
+  workspace/
+  lock/
 ```
 
-### 4. Commit the configuration (but not the runtime state)
+A named agent has a durable transcript:
 
-```bash
-git add .gitignore
-git add agentws/         # Add all agentws configuration
-git commit -m "Add agentws for multi-agent coordination"
+```text
+agents/<agent-name>/
+  name
+  role
+  current-job
+  engine
+  prompt.md
+  transcript.log
+  error.log
 ```
 
-That's it. Your project now has:
+Agent output is appended to `agents/<agent-name>/transcript.log`. The Python
+runner renders structured JSON events into a readable transcript instead of
+saving raw JSON. Job logs point to the agent transcript and remain short
+summaries. CLI diagnostics are saved under the agent directory as `error.log`.
+With `run_agentws --verbose`, rendered agent output is also printed to the
+terminal with each line prefixed by the agent name; live errors are prefixed and
+printed on stderr.
 
-```
-my-project/
-  .gitignore        # Must include "agentws/jobs/"
-  agentws/          # The agent workspace (commit this!)
-    AGENTS.md      # Protocol spec — agents read this automatically
-    default.team    # Default tmux team for tools/run_agentws.sh
-    roles/          # Role specifications (planner, coder, reviewer, etc.)
-    bin/            # Helper scripts
-    tools/          # Launch and workflow helper tools
-    jobs/           # Job directories appear here (gitignored)
-  src/              # Your actual code
-  AGENTS.md         # Your project's own conventions (optional)
-```
+`task-create` creates the task and the first planner job. Task commands are the
+public interface:
 
-**Important**: The `agentws/` configuration should be committed to your project's
-git repository. This ensures all team members and agents use the same workflow
-definitions. Only the `jobs/` directory (runtime state) is gitignored.
-
-Agents launched inside `my-project/agentws/` will automatically read
-`AGENTS.md` and understand the job protocol. Your project's own
-`AGENTS.md` (if you have one) stays separate — job specs can reference
-it for project-specific rules.
-
-### Why commit the configuration?
-
-Committing `agentws/` configuration to git provides:
-- **Consistency**: All team members use the same agent roles and workflows
-- **Versioning**: Track changes to your agent coordination patterns
-- **Customization**: Project-specific role definitions evolve with your code
-- **Reproducibility**: New team members can clone and immediately use the same setup
-
-The `jobs/` directory remains gitignored because it contains ephemeral runtime
-state that's specific to each work session.
-
-### Alternative: shared directory on NFS/sshfs
-
-If your agents run on different machines, mount a shared directory and
-set up agentws there:
-
-```bash
-cp -r agentws/template/ /mnt/shared/agentws/
-cd /mnt/shared/agentws/
-bin/job-init
+```sh
+agentws/bin/task-create <task-id> <spec-file>
+agentws/bin/task-show <task-id>
+agentws/bin/task-comment <task-id> <message>
+agentws/bin/task-state <task-id> open
+agentws/bin/task-state <task-id> done -m "completed"
+agentws/bin/task-result <task-id> <result-file>
+agentws/bin/task-list
 ```
 
-All agents on all machines point to the same `/mnt/shared/agentws/`.
-The `mkdir`-based locking works correctly on NFS.
+Task states are deliberately small:
 
-## Quickstart
-
-### 1. Create a seed job
-
-```bash
-cd my-project/agentws
-bin/job-create add-auth -t plan
+```text
+open
+done
 ```
 
-Edit the spec with your goal:
+Jobs have internal execution status so AgentWS can recover from dead agent
+processes. Task state is only the visible task lifecycle. Planner owns task
+completion and records the final result with `task-result`, which also marks
+the task `done`.
 
-```bash
-$EDITOR jobs/add-auth/spec.md
+For repository-changing tasks, planner creates or names a dedicated work branch
+and worktree for the change and records the original base checkout, exact base
+branch, base commit, worktree, and work branch. Implementer and reviewer work
+only in that worktree. The committer is the local integration role: after review
+approval, it checks out the named base branch in the original base checkout,
+merges the approved work branch there, and verifies again in that base checkout.
+
+Every non-planner job reports its outcome back to planner as a planner job. Any
+agent that learns durable undocumented project knowledge creates a planner job
+asking planner to route a documentation update through implementer, reviewer,
+and committer.
+
+## Team File
+
+`default.team` is line-oriented:
+
+```text
+# <name> <role> <agent> [model]
+planner-1 planner pi
+implementer-1 implementer pi
+reviewer-1 reviewer pi
+committer-1 committer pi
 ```
 
-```markdown
-# Add OAuth2 authentication
+The agent field is one of `pi`, `codex`, or `claude`.
 
-## Project
-/path/to/my-project
+## Roles
 
-## Objective
-Add Google OAuth2 login to the web app. Users should be able to sign in
-with their Google account and have a session persisted in a cookie.
+Role source files are installed with the template:
 
-## Rules
-Follow conventions in /path/to/my-project/AGENTS.md
-
-## When Done
-Set status to done.
+```text
+agentws/roles/
 ```
 
-### 2. Tell your human to launch agents
+- `planner`: coordinates the task, updates it with `task-comment`, creates
+  follow-up jobs, and records the final result with `task-result`.
+- `implementer`: does concrete work and creates reviewer jobs.
+- `reviewer`: reviews artifacts and routes pass/fix/blocker outcomes.
+- `committer`: integrates approved work locally.
 
-```bash
-# Launch the configured team.
-agentws/tools/run_agentws.sh
+Documentation updates are routed by planner through implementer, reviewer, and
+committer.
+
+## Commands
+
+```sh
+agentws/bin/job-init
+agentws/bin/task-create <task-id> <spec-file>
+agentws/bin/task-show <task-id>
+agentws/bin/task-comment <task-id> <message>
+agentws/bin/task-state <task-id> open|done [-m message]
+agentws/bin/task-result <task-id> <result-file>
+agentws/bin/task-list
+agentws/bin/job-create <job-id> -r <role> -t <task-id> <spec-file>
+agentws/bin/job-list [status]
+agentws/tools/run_agentws [--verbose] [team-file]
+agentws/tools/agent [--pi|--codex|--claude] [--headless] [-m model] <role> <agent-name>
 ```
 
-Agents can also be launched manually, one process per role:
-
-```bash
-cd agentws
-pi "You are a planner"
-pi "You are a coder"
-pi "You are a reviewer"
-pi "You are a committer"
-```
-
-The examples use `pi` from pi.dev, but AgentWS only depends on the filesystem
-protocol and local role prompts. Other coding-agent CLIs can be used if they are
-started in `agentws/` with the same `You are a <role>` prompt.
-
-Agents will:
-- Read their role document for specific instructions
-- Claim jobs matching their type
-- Follow the workflow defined in their role
-- Create follow-up jobs as specified
-
-The specific workflow depends on your project, but the template includes
-standard software development roles (planner → coder → reviewer → committer).
-
-### 3. Check job status
-
-```bash
-bin/job-list              # See all jobs
-bin/job-list running      # See what's in progress
-bin/job-list done         # See completed work
-```
-
-### 4. Handle stale jobs
-
-If an agent dies mid-work:
-
-```bash
-bin/job-reap 60           # Reset jobs stale for >60 minutes to pending
-```
-
-## Helpers Reference
-
-| Command | Description |
-|---|---|
-| `bin/job-init` | Initialize the jobs/ directory |
-| `bin/job-create <id> -t <type>` | Create a new job |
-| `bin/job-claim [-t <type>] [--wait]` | Claim a pending job (blocks with `--wait`) |
-| `bin/job-list [status]` | List jobs, optionally filtered |
-| `bin/job-status <id> [status]` | Get or set job status |
-| `bin/job-watch <status>` | Watch for jobs entering a status |
-| `bin/job-reap [minutes]` | Reclaim stale jobs (default: 60 min) |
-
-## Typical Workflow
-
-```
-You (human)
-  │
-  ├─ Create initial job(s) with your goal
-  │
-  └─ Launch agents for different roles
-       │
-       ├─ Each agent claims jobs of its type
-       ├─ Does the work according to its role
-       ├─ Creates follow-up jobs as specified
-       └─ Continues until no more jobs
-
-The template includes standard development roles:
-- planner: decomposes goals into tasks
-- coder: implements in isolated branches
-- reviewer: ensures quality
-- committer: merges to main
-
-See template/roles/ for role specifications.
-```
-
-### Workflow Chaining Best Practices (Updated)
-
-Real-world usage on complex, multi-stage projects showed that loose or vague
-dependency language in specs can cause agents to lose track of ordering.
-
-**Key pattern**: Use `*-review` jobs as explicit quality gates. Each review job
-is responsible for running the full checklist **and** creating the next job in
-the sequence using an exact `bin/job-create` command.
-
-See the **"Best Practices for Dependency Management and Job Chaining"** section
-in `template/AGENTS.md` (and in every copied `AGENTS.md`) for detailed guidance,
-prescriptive language examples, and recommended "MUST" rules to use in `When Done`
-sections.
-
-This makes even very complex workflows reliable and self-documenting when many
-agents run concurrently.
-
-## Design Decisions
-
-**Why filesystem, not SQLite?**
-SQLite locking doesn't work reliably on NFS. `mkdir` is atomic on every
-filesystem that matters. The filesystem is also universally inspectable —
-no special tools needed.
-
-**Why no DAG scheduler?**
-Dependencies are encoded as natural language in the "When Done" section
-of each spec. The planner designs the chain; agents just follow
-instructions. This is simpler, more flexible, and lets you express
-conditional logic ("if tests fail, create a fix job") without a graph
-DSL.
-
-**Why job types instead of agent names?**
-Types decouple the work from the worker. You can run 5 coder agents or one —
-the system doesn't care. Scale by adding agents, not by reconfiguring the
-queue.
-
-**Why polling in job-claim?**
-`fswatch`/`inotify` don't fire on NFS/sshfs (the local kernel never
-sees remote writes). Polling with a short interval is simple and
-universally reliable. For local disks, `job-watch` uses `fswatch` when
-available.
-
-## Requirements
-
-- bash 4+ (for associative arrays in `job-watch`)
-- Standard Unix tools: `mkdir`, `cat`, `ls`, `stat`, `date`
-- Optional: `fswatch` for real-time file watching on local disks
+Lower-level job helper behavior is described in `agentws/AGENTS.md`.
 
 ## License
 

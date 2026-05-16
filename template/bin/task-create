@@ -1,0 +1,102 @@
+#!/bin/sh
+set -eu
+
+AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$AGENTWS_ROOT/bin/lib-agentws"
+
+usage() {
+    echo "Usage: task-create <task-id> <spec-file>"
+    echo ""
+    echo "Create a task and enqueue its initial planner job."
+    exit 1
+}
+
+create_task() {
+    task_id="$1"
+    spec_file="$2"
+
+    TASK_DIR="$TASKS_DIR/$task_id"
+
+    if ! mkdir "$TASK_DIR" 2>/dev/null; then
+        die "task '$task_id' already exists"
+    fi
+
+    cp "$spec_file" "$TASK_DIR/spec.md"
+    touch "$TASK_DIR/log.md"
+    write_file_atomic "$TASK_DIR/state" "open"
+}
+
+create_initial_planner_job() {
+    task_id="$1"
+
+    PLAN_JOB_ID="$task_id-plan"
+
+    [ ! -e "$JOBS_DIR/$PLAN_JOB_ID" ] || die "initial planner job '$PLAN_JOB_ID' already exists"
+
+    tmp_spec="$TASKS_DIR/$task_id/.initial-plan-spec.$$"
+    cat > "$tmp_spec" <<EOF
+# Plan for task $task_id
+
+## Task
+$task_id
+
+## Objective
+Read the task with \`bin/task-show $task_id\`, update task understanding with
+\`bin/task-comment $task_id <message>\`, and create the first jobs needed to
+complete this task.
+
+## Acceptance Criteria
+The task has a clear initial plan, and any jobs needed next have been created
+with \`task-id=$task_id\`.
+
+## When Done
+Create the required follow-up jobs for this task, then close this planner job.
+The task is complete only when a planner decides it is complete and records the
+result with \`bin/task-result $task_id <result-file>\`.
+EOF
+
+    if ! "$AGENTWS_ROOT/bin/job-create" "$PLAN_JOB_ID" -r planner -t "$task_id" "$tmp_spec"; then
+        rm -f "$tmp_spec"
+        exit 1
+    fi
+
+    rm -f "$tmp_spec"
+}
+
+TASK_ID=""
+SPEC_FILE=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --help|-h)
+            usage
+            ;;
+        *)
+            if [ -z "$TASK_ID" ]; then
+                TASK_ID="$1"
+            elif [ -z "$SPEC_FILE" ]; then
+                SPEC_FILE="$1"
+            else
+                die "unexpected argument '$1'"
+            fi
+            shift
+            ;;
+    esac
+done
+
+[ -n "$TASK_ID" ] || usage
+[ -n "$SPEC_FILE" ] || die "spec file required"
+[ "$SPEC_FILE" = "-" ] && die "pass a spec file path, not stdin"
+[ -f "$SPEC_FILE" ] || die "spec file '$SPEC_FILE' does not exist"
+[ -s "$SPEC_FILE" ] || die "spec file '$SPEC_FILE' is empty"
+
+validate_task_id "$TASK_ID"
+require_tasks_dir
+require_jobs_dir
+
+create_task "$TASK_ID" "$SPEC_FILE"
+create_initial_planner_job "$TASK_ID"
+
+echo "created task: $TASKS_DIR/$TASK_ID"
+echo "task id: $TASK_ID"
+echo "initial planner job: $JOBS_DIR/$TASK_ID-plan"

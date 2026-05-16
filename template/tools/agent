@@ -1,0 +1,597 @@
+#!/usr/bin/env python3
+"""Run one named AgentWS agent and render JSON events to transcript logs."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+
+
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"error: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def validate_name(label: str, value: str) -> None:
+    if not value or not NAME_RE.match(value):
+        die(f"invalid {label} '{value}' - only alphanumeric, dot, underscore, and hyphen allowed")
+
+
+def write_file(path: Path, text: str) -> None:
+    path.write_text(text + "\n", encoding="utf-8")
+
+
+def append_job_log(job_dir: Path, summary: str, detail: str) -> None:
+    with (job_dir / "log.md").open("a", encoding="utf-8") as f:
+        f.write(f"## {timestamp()} - {summary}\n\n")
+        f.write(detail.rstrip() + "\n\n")
+
+
+def run_bin(root: Path, *args: str, capture: bool = True) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(
+        [str(root / "bin" / args[0]), *args[1:]],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        check=False,
+    )
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        detail = stderr or stdout or f"exit status {proc.returncode}"
+        die(f"{args[0]} failed: {detail}", proc.returncode)
+    return proc
+
+
+class Transcript:
+    def __init__(self, paths: Iterable[Path], mirror_stdout: bool = False, mirror_prefix: str = "") -> None:
+        self.files = [path.open("a", encoding="utf-8", buffering=1) for path in paths]
+        self.section: str | None = None
+        self.mirror_stdout = mirror_stdout
+        self.mirror_prefix = mirror_prefix
+        self.mirror_line_start = True
+
+    def close(self) -> None:
+        for f in self.files:
+            f.close()
+
+    def write(self, text: str) -> None:
+        if not text:
+            return
+        for f in self.files:
+            f.write(text)
+            f.flush()
+        if self.mirror_stdout:
+            sys.stdout.write(self.prefix_mirror_text(text))
+            sys.stdout.flush()
+
+    def prefix_mirror_text(self, text: str) -> str:
+        if not self.mirror_prefix:
+            return text
+        out: list[str] = []
+        for ch in text:
+            if self.mirror_line_start and ch != "\n":
+                out.append(self.mirror_prefix)
+                self.mirror_line_start = False
+            out.append(ch)
+            if ch == "\n":
+                self.mirror_line_start = True
+        return "".join(out)
+
+    def line(self, text: str = "") -> None:
+        self.write(text + "\n")
+
+    def heading(self, title: str) -> None:
+        if self.section != title:
+            self.write(f"\n### {title}\n\n")
+            self.section = title
+
+    def event(self, title: str, detail: str | None = None) -> None:
+        self.section = None
+        self.line()
+        self.line(f"[{timestamp()}] {title}")
+        if detail:
+            self.line(detail.rstrip())
+
+
+class Renderer:
+    def __init__(self, transcript: Transcript, engine: str) -> None:
+        self.t = transcript
+        self.engine = engine
+        self.saw_assistant_text = False
+
+    def render_line(self, raw: str) -> None:
+        raw = raw.rstrip("\n")
+        if not raw:
+            return
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            if raw.lstrip().startswith("{"):
+                return
+            else:
+                self.t.event("output", raw)
+            return
+        if not isinstance(event, dict):
+            return
+
+        if self.engine == "claude":
+            self.render_claude(event)
+        elif self.engine == "codex":
+            self.render_codex(event)
+        elif self.engine == "pi":
+            self.render_pi(event)
+
+    def text_block(self, title: str, text: str) -> None:
+        if not text:
+            return
+        self.t.heading(title)
+        self.t.write(text)
+        if title == "Assistant":
+            self.saw_assistant_text = True
+
+    def render_claude(self, event: dict[str, Any]) -> None:
+        typ = event.get("type")
+        subtype = event.get("subtype")
+
+        if typ == "stream_event":
+            inner = event.get("event")
+            if isinstance(inner, dict):
+                delta = inner.get("delta")
+                if isinstance(delta, dict):
+                    delta_type = delta.get("type")
+                    if delta_type == "text_delta":
+                        self.text_block("Assistant", str(delta.get("text", "")))
+                        return
+                    if delta_type in ("thinking_delta", "reasoning_delta"):
+                        self.text_block("Thinking", str(delta.get("thinking") or delta.get("text") or ""))
+                        return
+                inner_type = inner.get("type")
+                if inner_type:
+                    return
+
+        if typ == "system":
+            if subtype == "init":
+                model = event.get("model")
+                session_id = event.get("session_id")
+                detail = "\n".join(str(x) for x in (f"model: {model}" if model else "", f"session: {session_id}" if session_id else "") if x)
+                self.t.event("claude session initialized", detail)
+                return
+            if subtype == "api_retry":
+                attempt = event.get("attempt")
+                max_retries = event.get("max_retries")
+                error = event.get("error")
+                self.t.event("claude api retry", f"attempt: {attempt}/{max_retries}\nerror: {error}")
+                return
+            if subtype:
+                return
+
+        if typ == "assistant":
+            if not self.saw_assistant_text:
+                text = self.extract_claude_message_text(event.get("message"))
+                if text:
+                    self.text_block("Assistant", text)
+                    return
+
+        if typ == "result":
+            result = event.get("result")
+            if result and not self.saw_assistant_text:
+                self.text_block("Assistant", str(result))
+            self.t.event("claude result", self.scalar_metadata(event, skip={"result"}))
+            return
+
+        self.render_generic(event)
+
+    def extract_claude_message_text(self, message: Any) -> str:
+        if not isinstance(message, dict):
+            return ""
+        parts: list[str] = []
+        content = message.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+        return "".join(parts)
+
+    def render_codex(self, event: dict[str, Any]) -> None:
+        typ = event.get("type")
+        if typ == "thread.started":
+            self.t.event("codex thread started", f"thread: {event.get('thread_id')}")
+            return
+        if typ == "turn.started":
+            self.t.event("codex turn started")
+            return
+        if typ == "turn.completed":
+            usage = event.get("usage")
+            self.t.event("codex turn completed", self.usage_summary(usage))
+            return
+        if typ == "turn.failed":
+            self.t.event("codex turn failed", self.scalar_metadata(event, skip={"type"}))
+            return
+        if typ == "error":
+            self.t.event("codex error", self.scalar_metadata(event, skip={"type"}))
+            return
+
+        if typ in ("item.started", "item.updated", "item.completed"):
+            item = event.get("item")
+            if isinstance(item, dict):
+                self.render_codex_item(typ, item)
+                return
+
+        self.render_generic(event)
+
+    def render_codex_item(self, event_type: str, item: dict[str, Any]) -> None:
+        item_type = str(item.get("type", "item"))
+        status = item.get("status")
+        prefix = event_type.replace("item.", "")
+
+        if item_type == "agent_message":
+            text = item.get("text")
+            if text:
+                self.text_block("Assistant", str(text).rstrip() + "\n")
+                return
+
+        if item_type == "reasoning":
+            text = item.get("text") or item.get("summary") or item.get("content")
+            if text:
+                self.text_block("Reasoning", self.plain_text(text).rstrip() + "\n")
+                return
+
+        if item_type == "command_execution":
+            command = self.command_text(item.get("command"))
+            title = f"command {prefix}"
+            detail_parts = []
+            if command:
+                detail_parts.append(command)
+            if status:
+                detail_parts.append(f"status: {status}")
+            for key in ("exit_code", "duration_ms"):
+                if key in item:
+                    detail_parts.append(f"{key}: {item[key]}")
+            output = item.get("output") or item.get("stdout") or item.get("stderr")
+            if output:
+                detail_parts.append(self.limit_text(self.plain_text(output)))
+            self.t.event(title, "\n".join(detail_parts))
+            return
+
+        if item_type in ("file_change", "patch", "plan_update", "web_search", "mcp_tool_call"):
+            self.t.event(f"{item_type} {prefix}", self.scalar_metadata(item, skip={"id", "type"}))
+            return
+
+        self.t.event(f"{item_type} {prefix}", self.scalar_metadata(item, skip={"id", "type"}))
+
+    def render_pi(self, event: dict[str, Any]) -> None:
+        typ = event.get("type")
+        if typ == "session":
+            return
+        if typ in ("agent_start", "agent_end", "turn_start", "turn_end", "message_start", "message_end"):
+            return
+        if typ == "message_update":
+            msg_event = event.get("assistantMessageEvent")
+            if isinstance(msg_event, dict):
+                msg_type = msg_event.get("type")
+                delta = msg_event.get("delta")
+                if msg_type == "text_delta":
+                    self.text_block("Assistant", str(delta or ""))
+                    return
+                if msg_type == "thinking_delta":
+                    self.text_block("Thinking", str(delta or ""))
+                    return
+                if msg_type in (
+                    "thinking_start",
+                    "thinking_end",
+                    "text_start",
+                    "text_end",
+                    "toolcall_start",
+                    "toolcall_delta",
+                    "toolcall_end",
+                ):
+                    return
+            self.render_generic(event)
+            return
+        if typ == "tool_execution_start":
+            detail = self.command_text(event.get("args"))
+            self.tool_block(str(event.get("toolName") or "tool"), detail)
+            return
+        if typ == "tool_execution_update":
+            return
+        if typ == "tool_execution_end":
+            title = str(event.get("toolName") or "tool")
+            if event.get("isError"):
+                title += " (error)"
+            self.tool_block(title, self.limit_text(self.result_text(event.get("result"))))
+            return
+        if typ in ("queue_update", "compaction_start", "compaction_end", "auto_retry_start", "auto_retry_end"):
+            self.t.event(f"pi {typ}", self.scalar_metadata(event, skip={"type"}))
+            return
+
+        self.render_generic(event)
+
+    def render_generic(self, event: dict[str, Any]) -> None:
+        return
+
+    def tool_block(self, name: str, detail: str | None = None) -> None:
+        self.t.heading("Tool Call")
+        self.t.line(name)
+        if detail:
+            self.t.line(detail.rstrip())
+        self.t.line()
+
+    def scalar_metadata(self, value: dict[str, Any], skip: set[str] | None = None) -> str:
+        skip = skip or set()
+        lines: list[str] = []
+        for key, item in value.items():
+            if key in skip:
+                continue
+            if item in (None, "", [], {}):
+                continue
+            if isinstance(item, (dict, list, tuple)):
+                continue
+            lines.append(f"{key}: {self.limit_text(str(item))}")
+        return "\n".join(lines)
+
+    def plain_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, dict):
+            return self.result_text(value)
+        if isinstance(value, (list, tuple)):
+            parts = [self.plain_text(item) for item in value]
+            return "\n".join(part for part in parts if part)
+        return str(value)
+
+    def command_text(self, value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            command = value.get("command") or value.get("cmd")
+            if command:
+                return str(command)
+            parts = []
+            for key in ("path", "file", "pattern", "query"):
+                if key in value and not isinstance(value[key], (dict, list, tuple)):
+                    parts.append(f"{key}: {value[key]}")
+            return "\n".join(parts)
+        return self.plain_text(value)
+
+    def result_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, (list, tuple)):
+            parts = [self.result_text(item) for item in value]
+            return "\n".join(part for part in parts if part)
+        if isinstance(value, dict):
+            for key in ("text", "output", "stdout", "stderr", "error", "message", "delta"):
+                if key in value:
+                    text = self.result_text(value[key])
+                    if text:
+                        return text
+            content = value.get("content")
+            if isinstance(content, (list, tuple)):
+                parts = []
+                for item in content:
+                    text = self.result_text(item)
+                    if text:
+                        parts.append(text)
+                return "\n".join(parts)
+            return self.scalar_metadata(value)
+        return str(value)
+
+    def usage_summary(self, value: Any) -> str:
+        if not isinstance(value, dict):
+            return ""
+        parts = []
+        for key in ("input_tokens", "output_tokens", "total_tokens", "input", "output", "totalTokens"):
+            if key in value and not isinstance(value[key], (dict, list, tuple)):
+                parts.append(f"{key}: {value[key]}")
+        return "\n".join(parts)
+
+    def limit_text(self, text: str, limit: int = 4000) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit].rstrip() + f"\n... truncated {len(text) - limit} chars"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run one named AgentWS agent and render JSON output to transcript.log."
+    )
+    engine = parser.add_mutually_exclusive_group()
+    engine.add_argument("--pi", action="store_const", const="pi", dest="engine")
+    engine.add_argument("--codex", action="store_const", const="codex", dest="engine")
+    engine.add_argument("--claude", action="store_const", const="claude", dest="engine")
+    parser.set_defaults(engine="pi")
+    parser.add_argument("--headless", action="store_true", help="Do not mirror rendered transcript output to stdout")
+    parser.add_argument("-m", "--model")
+    parser.add_argument("role")
+    parser.add_argument("agent_name")
+    return parser.parse_args()
+
+
+def build_command(engine: str, model: str | None, agent_dir: Path, prompt: str) -> list[str]:
+    if engine == "pi":
+        cmd = ["pi", "-p", "--mode", "json"]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.extend(["--session-dir", str(agent_dir / "pi-session"), prompt])
+        return cmd
+    if engine == "codex":
+        cmd = ["codex", "exec", "--json", "--output-last-message", str(agent_dir / "last-message.md")]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.append(prompt)
+        return cmd
+    if engine == "claude":
+        cmd = ["claude", "-p"]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.extend(["--output-format", "stream-json", "--verbose", "--include-partial-messages", prompt])
+        return cmd
+    raise AssertionError(engine)
+
+
+def main() -> int:
+    args = parse_args()
+    validate_name("role", args.role)
+    validate_name("agent ID", args.agent_name)
+
+    script_dir = Path(__file__).resolve().parent
+    root = script_dir.parent
+
+    if shutil.which(args.engine) is None:
+        die(f"required command not found: {args.engine}")
+
+    role_file = root / "roles" / f"{args.role}.md"
+    if not role_file.is_file():
+        die(f"role file not found: roles/{args.role}.md")
+
+    agent_dir_out = run_bin(root, "agent-new", args.agent_name, args.role).stdout.strip()
+    if not agent_dir_out:
+        die("agent-new returned no agent directory")
+    agent_dir = Path(agent_dir_out)
+
+    write_file(agent_dir / "engine", args.engine)
+    if args.model:
+        write_file(agent_dir / "model", args.model)
+    write_file(agent_dir / "last_started_at", timestamp())
+
+    while True:
+        run_bin(root, "job-wait", "-r", args.role, capture=True)
+        claim = run_bin(root, "job-claim", "-r", args.role, "--agent-id", args.agent_name).stdout.strip()
+        if claim.startswith("CLAIMED: "):
+            job_id = claim.removeprefix("CLAIMED: ").strip()
+            break
+        if claim == "NO_JOBS":
+            continue
+        die(f"unexpected job-claim output: {claim}")
+
+    write_file(agent_dir / "current-job", job_id)
+
+    job_dir = root / "jobs" / job_id
+    prompt = f"You are agent {args.agent_name}."
+    write_file(agent_dir / "prompt.md", prompt)
+
+    agent_transcript = agent_dir / "transcript.log"
+    agent_error = agent_dir / "error.log"
+    for path in (agent_transcript, agent_error):
+        path.touch()
+
+    append_job_log(
+        job_dir,
+        "Transcript",
+        f"Agent transcript: agents/{args.agent_name}/transcript.log",
+    )
+
+    transcript = Transcript(
+        [agent_transcript],
+        mirror_stdout=not args.headless,
+        mirror_prefix=f"{args.agent_name}: ",
+    )
+    error_files = [agent_error.open("a", encoding="utf-8", buffering=1)]
+
+    try:
+        transcript.event(
+            "run start",
+            "\n".join(
+                part
+                for part in (
+                    f"agent: {args.agent_name}",
+                    f"role: {args.role}",
+                    f"job: {job_id}",
+                    f"engine: {args.engine}",
+                    f"model: {args.model}" if args.model else "",
+                )
+                if part
+            ),
+        )
+
+        cmd = build_command(args.engine, args.model, agent_dir, prompt)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        def copy_stderr() -> None:
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                for f in error_files:
+                    f.write(line)
+                    f.flush()
+                if sys.stderr.isatty():
+                    sys.stderr.write(f"\033[31m{args.agent_name}: {line}\033[0m")
+                else:
+                    sys.stderr.write(f"{args.agent_name}: {line}")
+                sys.stderr.flush()
+
+        stderr_thread = threading.Thread(target=copy_stderr, daemon=True)
+        stderr_thread.start()
+
+        renderer = Renderer(transcript, args.engine)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            renderer.render_line(line)
+
+        rc = proc.wait()
+        stderr_thread.join(timeout=1)
+
+        last_message = agent_dir / "last-message.md"
+        if args.engine == "codex" and last_message.is_file() and last_message.stat().st_size > 0:
+            text = last_message.read_text(encoding="utf-8", errors="replace")
+            if text and not renderer.saw_assistant_text:
+                transcript.text_block("Assistant", text.rstrip() + "\n")
+
+        transcript.event("run end", f"exit: {rc}")
+        return rc
+    finally:
+        subprocess.run(
+            [
+                str(root / "bin" / "job-release"),
+                job_id,
+                "--agent-id",
+                args.agent_name,
+                "-m",
+                "Agent process exited while the job was still owned by this agent; releasing back to pending.",
+            ],
+            cwd=root,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        transcript.close()
+        for f in error_files:
+            f.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

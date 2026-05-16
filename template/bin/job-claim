@@ -1,31 +1,41 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$AGENTWS_ROOT/bin/lib-agentws"
 
 usage() {
-    echo "Usage: job-claim [job-id] [-t <type>]"
+    echo "Usage: job-claim [job-id] [-r <role>] --agent-id <agent-id>"
     echo ""
-    echo "Claim a job. If no job-id is given, claims the oldest pending job."
-    echo "Returns 'CLAIMED: <job-id>' or 'NO_JOBS'"
+    echo "Claim a pending job for a named agent."
+    echo "If no job-id is given, claims the oldest pending job."
+    echo "Returns 'CLAIMED: <job-id>' or 'NO_JOBS'."
     echo ""
     echo "Options:"
-    echo "  -t <type>    Only claim jobs of this type"
+    echo "  -r <role>    Only claim jobs assigned to this role"
+    echo "  --agent-id   Named agent that will own the job"
     exit 1
 }
 
 JOB_ID=""
-JOB_TYPE=""
+JOB_ROLE=""
+AGENT_ID=""
 
-while [ $# -gt 0 ]; do
+while [ "$#" -gt 0 ]; do
     case "$1" in
-        -t)
-            [ $# -ge 2 ] || die "-t requires a type"
-            JOB_TYPE="$2"
+        -r|--role)
+            [ "$#" -ge 2 ] || die "$1 requires a role"
+            JOB_ROLE="$2"
             shift 2
             ;;
-        --help|-h) usage ;;
+        --agent-id)
+            [ "$#" -ge 2 ] || die "$1 requires an agent ID"
+            AGENT_ID="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            ;;
         *)
             if [ -z "$JOB_ID" ]; then
                 JOB_ID="$1"
@@ -37,104 +47,56 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+[ -n "$JOB_ROLE" ] && validate_role "$JOB_ROLE"
+[ -n "$AGENT_ID" ] || die "--agent-id <agent-id> is required"
+validate_agent_id "$AGENT_ID"
 require_jobs_dir
 
-# Check if I already own an active job
-MY_ID="$(agent_key)"
-for job_dir in "$JOBS_DIR"/*; do
-    [ -d "$job_dir" ] || continue
-    if [ -f "$job_dir/agent.id" ]; then
-        agent=$(cat "$job_dir/agent.id" 2>/dev/null | cut -d: -f1-2)
-        status=$(cat "$job_dir/status" 2>/dev/null || echo "")
-        if [ "$agent" = "$MY_ID" ]; then
-            case "$status" in
-                claimed)
-                    job_name=$(basename "$job_dir")
-                    echo "CLAIMED: $job_name"
-                    exit 0
-                    ;;
-                running)
-                    job_name=$(basename "$job_dir")
-                    echo "error: current agent already owns running job '$job_name'" >&2
-                    echo "finish, fail, or release it before claiming another job" >&2
-                    exit 1
-                    ;;
-            esac
-        fi
-    fi
-done
-
-# Try to claim a specific job
 claim_job() {
-    local job_id="$1"
-    local job_dir="$JOBS_DIR/$job_id"
+    job_id="$1"
+    job_dir="$JOBS_DIR/$job_id"
 
     [ -d "$job_dir" ] || return 1
+    [ -f "$job_dir/status" ] || return 1
+    [ -f "$job_dir/role" ] || return 1
 
-    local status
-    status=$(cat "$job_dir/status" 2>/dev/null || echo "")
+    status="$(cat "$job_dir/status" 2>/dev/null || true)"
     [ "$status" = "pending" ] || return 1
 
-    # Check type filter
-    if [ -n "$JOB_TYPE" ]; then
-        local jtype
-        jtype=$(cat "$job_dir/type" 2>/dev/null || echo "")
-        [ "$jtype" = "$JOB_TYPE" ] || return 1
+    role="$(cat "$job_dir/role" 2>/dev/null || true)"
+    [ -n "$role" ] || return 1
+
+    if [ -n "$JOB_ROLE" ] && [ "$role" != "$JOB_ROLE" ]; then
+        return 1
     fi
 
-    # Atomic lock via mkdir - works on NFS
     mkdir "$job_dir/lock" 2>/dev/null || return 1
 
-    # Won the race - write identity and update status
-    local agent_id="$(agent_key):$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "$agent_id" > "$job_dir/agent.id"
-    echo "claimed" > "$job_dir/status"
+    write_file_atomic "$job_dir/agent-id" "$AGENT_ID"
+    write_file_atomic "$job_dir/status" "claimed"
     echo "CLAIMED: $job_id"
     return 0
 }
 
-# Specific job requested
 if [ -n "$JOB_ID" ]; then
     validate_job_id "$JOB_ID"
-    if [ ! -d "$JOBS_DIR/$JOB_ID" ]; then
-        echo "error: job '$JOB_ID' does not exist" >&2
-        exit 1
-    fi
+    [ -d "$JOBS_DIR/$JOB_ID" ] || die "job '$JOB_ID' does not exist"
+
     if claim_job "$JOB_ID"; then
         exit 0
-    else
-        status=$(cat "$JOBS_DIR/$JOB_ID/status" 2>/dev/null || echo "unknown")
-        if [ "$status" != "pending" ]; then
-            echo "error: cannot claim job '$JOB_ID' from status '$status' (expected: pending)" >&2
-            exit 1
-        fi
-
-        if [ -n "$JOB_TYPE" ]; then
-            jtype=$(cat "$JOBS_DIR/$JOB_ID/type" 2>/dev/null || echo "")
-            if [ "$jtype" != "$JOB_TYPE" ]; then
-                echo "error: cannot claim job '$JOB_ID': type is '$jtype' (expected: '$JOB_TYPE')" >&2
-                exit 1
-            fi
-        fi
-
-        if [ -d "$JOBS_DIR/$JOB_ID/lock" ]; then
-            echo "error: cannot claim job '$JOB_ID': lock directory already exists" >&2
-            exit 1
-        fi
-
-        echo "error: could not claim job '$JOB_ID' due to a concurrent claim race" >&2
-        exit 1
     fi
+
+    status="$(cat "$JOBS_DIR/$JOB_ID/status" 2>/dev/null || echo "unknown")"
+    [ "$status" = "pending" ] || die "cannot claim job '$JOB_ID' from status '$status' (expected: pending)"
+    [ ! -d "$JOBS_DIR/$JOB_ID/lock" ] || die "cannot claim job '$JOB_ID': lock directory already exists"
+    die "could not claim job '$JOB_ID' due to a concurrent claim race"
 fi
 
-# No specific job - try to claim the oldest pending job
-# Sort by directory modification time (oldest first)
-for job_dir in $(ls -1tr "$JOBS_DIR" 2>/dev/null); do
-    validate_job_id "$job_dir"
-    if claim_job "$job_dir"; then
+for job_name in $(ls -1tr "$JOBS_DIR" 2>/dev/null || true); do
+    validate_job_id "$job_name"
+    if claim_job "$job_name"; then
         exit 0
     fi
 done
 
 echo "NO_JOBS"
-exit 0

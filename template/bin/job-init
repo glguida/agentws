@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$AGENTWS_ROOT/bin/lib-agentws"
@@ -11,9 +11,23 @@ else
     echo "Created jobs/ directory."
 fi
 
+if [ -d "$TASKS_DIR" ]; then
+    echo "tasks/ directory already exists."
+else
+    mkdir -p "$TASKS_DIR"
+    echo "Created tasks/ directory."
+fi
+
+if [ -d "$AGENTWS_ROOT/agents" ]; then
+    echo "agents/ directory already exists."
+else
+    mkdir -p "$AGENTWS_ROOT/agents"
+    echo "Created agents/ directory."
+fi
+
 echo "AgentWS initialized at: $AGENTWS_ROOT"
 echo ""
 echo "Next steps:"
-echo "  1. Write a complete spec:  \$EDITOR /tmp/my-first-job-spec.md"
-echo "  2. Create the job:         bin/job-create my-first-job -t <type> /tmp/my-first-job-spec.md"
-echo "  3. Launch agents with their assigned roles."
+echo "  1. Write a complete task:  \$EDITOR /tmp/my-first-task.md"
+echo "  2. Create the task:        bin/task-create my-first-task /tmp/my-first-task.md"
+echo "  3. Start a planner:        tools/agent --pi planner planner-1"

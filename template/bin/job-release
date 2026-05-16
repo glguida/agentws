@@ -1,89 +1,66 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$AGENTWS_ROOT/bin/lib-agentws"
 
 usage() {
-    echo "Usage: job-release <job-id> -m <message>"
-    echo ""
-    echo "Release a claimed or running job back to pending status."
-    echo "Required current status: claimed or running"
-    echo "Removes lock, clears owner information, and logs the release."
-    echo ""
-    echo "Options:"
-    echo "  -m <message>    Required log message explaining why job was released"
-    echo ""
-    echo "Examples:"
-    echo "  job-release my-job -m 'dependency not ready'"
-    echo "  job-release my-job -m 'temporary resource unavailable'"
+    echo "Usage: job-release <job-id> --agent-id <agent-id> -m <message>"
     exit 1
 }
 
 JOB_ID=""
 MESSAGE=""
+AGENT_ID=""
 
-while [ $# -gt 0 ]; do
+while [ "$#" -gt 0 ]; do
     case "$1" in
         -m)
-            [ $# -ge 2 ] || die "-m requires a message"
+            [ "$#" -ge 2 ] || die "-m requires a message"
             MESSAGE="$2"
             shift 2
             ;;
-        --help|-h) usage ;;
+        --agent-id)
+            [ "$#" -ge 2 ] || die "$1 requires an agent ID"
+            AGENT_ID="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            ;;
         *)
             if [ -z "$JOB_ID" ]; then
                 JOB_ID="$1"
             else
-                echo "error: unexpected argument '$1'" >&2
-                usage
+                die "unexpected argument '$1'"
             fi
             shift
             ;;
     esac
 done
 
-[ -z "$JOB_ID" ] && usage
+[ -n "$JOB_ID" ] || usage
+[ -n "$AGENT_ID" ] || die "--agent-id <agent-id> is required"
 [ -n "$MESSAGE" ] || die "-m <message> is required"
 
 validate_job_id "$JOB_ID"
+validate_agent_id "$AGENT_ID"
 require_jobs_dir
 JOB_DIR="$JOBS_DIR/$JOB_ID"
 
-# Check job exists
-if [ ! -d "$JOB_DIR" ]; then
-    echo "error: job '$JOB_ID' does not exist" >&2
-    exit 1
-fi
-
-current_status=$(cat "$JOB_DIR/status" 2>/dev/null || echo "unknown")
-
+[ -d "$JOB_DIR" ] || die "job '$JOB_ID' does not exist"
+current_status="$(read_status "$JOB_DIR")"
 case "$current_status" in
     claimed|running) ;;
-    *)
-        echo "error: cannot release job '$JOB_ID' from status '$current_status' (expected: claimed or running)" >&2
-        exit 1
-        ;;
+    *) die "cannot release job '$JOB_ID' from status '$current_status' (expected: claimed or running)" ;;
 esac
 
-if [ ! -d "$JOB_DIR/lock" ]; then
-    echo "error: cannot release job '$JOB_ID': missing lock directory" >&2
-    exit 1
-fi
+[ -d "$JOB_DIR/lock" ] || die "cannot release job '$JOB_ID': missing lock directory"
+require_agent_owner "release" "$JOB_ID" "$JOB_DIR" "$AGENT_ID"
 
-require_owner "release" "$JOB_ID" "$JOB_DIR"
-
-rmdir "$JOB_DIR/lock" 2>/dev/null || {
-    echo "error: cannot release job '$JOB_ID': lock directory is not empty" >&2
-    exit 1
-}
-
-# Remove owner information
-rm -f "$JOB_DIR/owner"
-rm -f "$JOB_DIR/agent.id"
-
-echo "pending" > "$JOB_DIR/status"
-
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Released back to pending ($MESSAGE)" >> "$JOB_DIR/log.md"
+append_log "$JOB_DIR" "Released back to pending" "$MESSAGE"
+write_file_atomic "$JOB_DIR/status" "pending"
+rm -f "$JOB_DIR/agent-id"
+rmdir "$JOB_DIR/lock" 2>/dev/null || die "cannot release job '$JOB_ID': lock directory is not empty"
 
 echo "$JOB_ID: $current_status -> pending"

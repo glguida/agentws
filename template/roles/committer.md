@@ -1,127 +1,87 @@
 # Committer Role
 
-Read `AGENTS.md` first. It defines the AgentWS protocol. This role only defines
-committer behavior.
+You are the local committer role for one assigned integration job.
 
-## Continuous Worker
+## Spec Compliance
 
-This is a continuous worker role. Never stop while idle. Never send a final/chat
-response while idle. Never summarize that there are no jobs, say you are ready,
-ask for more work, or return control to the user because the queue is empty.
+Do not integrate an artifact if the review approval clearly accepted missing
+required behavior, reduced scope, or investigation-only output for an
+implementation job. In that case, treat the integration as blocked and follow
+the generic problem handling in `AGENTS.md`.
 
-Your idle command is:
+## Work
 
-```bash
-bin/job-wait -t commit
-```
+1. Verify that the spec identifies an approved review or another explicit
+   authority for integration.
+2. Read the task, original job, review job, target project rules, and referenced
+   artifact.
+3. Confirm the workspace from the job spec:
 
-If `job-wait` times out, run the same command again. Only run
-`bin/job-claim -t commit` after `job-wait` returns successfully. After answering
-a human/operator question, resume this wait loop unless explicitly told to stop,
-pause, or change roles.
+   ```text
+   Base checkout: <path>
+   Base branch: <exact branch to integrate into>
+   Base commit: <commit>
+   Worktree: <path>
+   Work branch: <branch>
+   Integration action: <local merge or other local integration operation>
+   ```
 
-## Role
+   The base checkout must be the original repository checkout, not the task
+   worktree. The base branch is the branch that must receive the approved
+   changes, for example `master` or `main`. The worktree is only the source of
+   the approved work branch.
+4. Integrate only the approved artifact or operation described by the spec.
+   Merge the work branch from the named worktree into the base branch in the
+   original base checkout. Do not use the worktree as the final integration
+   checkout, and do not merge into whichever branch is currently checked out by
+   accident. Unless the integration job specifies another reviewed local
+   operation, the integration action is:
 
-You are the integration agent. You claim `type=commit` jobs and perform the final
-integration step requested by an approved review or by an explicit commit spec.
+   ```sh
+   git -C <base-checkout> merge <work-branch>
+   ```
+5. Before local integration, verify the integration checkout and branch:
 
-Integration may mean creating a local commit, merging a branch, applying an
-approved patch, publishing an artifact, or another project-specific action. The
-commit job spec and target project docs define the exact operation.
+   ```sh
+   git -C <base-checkout> rev-parse --show-toplevel
+   git -C <base-checkout> status --short
+   git -C <base-checkout> checkout <base-branch>
+   git -C <base-checkout> branch --show-current
+   ```
 
-## Queue
+   If the base checkout is missing, dirty in an unrelated way, or cannot be put
+   on the base branch, stop and follow the generic problem handling in
+   `AGENTS.md`. Do not commit from the worktree and do not merge into the task
+   branch. After checkout, `git -C <base-checkout> branch --show-current` must
+   print exactly the base branch from the job spec.
+6. Stage only intended source and documentation changes if the approved
+   integration operation leaves uncommitted changes. Exclude generated
+   artifacts, simulator outputs, build products, transcripts, scratch files, and
+   unrelated dirty files unless the job spec explicitly approves them.
+7. Run required verification in the base checkout after the merge. This is
+   required even if implementer and reviewer already ran tests. If a command
+   cannot run, record exactly why.
+8. Confirm that the base branch in the base checkout contains the approved
+   changes after integration. Record the base checkout, base branch, integrated
+   commit or merge identifier, and verification result.
+## Outcomes
 
-Claim `type=commit` jobs using the continuous worker protocol in `AGENTS.md`.
+On success, record the original job, review job, integration job, integrated
+artifact, merge commit or equivalent identifier, verification performed by the
+committer, the base checkout, the base branch, and any dependency now
+satisfied.
 
-## Approved Branch And Worktree
+If the approved artifact is already integrated or no repository change is
+needed, record the evidence.
 
-For code integrations, the commit job MUST identify the branch and worktree that
-Reviewer approved. Committer MUST integrate that exact approved artifact. Do not
-integrate from the target repository's existing worktree as a substitute for the
-approved branch/worktree.
+On a fixable integration failure, create a `role=implementer` fix job with exact
+failure output or reproduction steps and the required review follow-up.
 
-If a code commit job does not identify the approved branch and worktree, create a
-planner notification, log the blocker, and fail the commit job. If the approved
-branch or worktree is missing or no longer matches the reviewed artifact, treat
-that as a blocker unless the spec gives an explicit recovery path.
-
-## Documentation Discoveries
-
-When you discover durable technical information that is missing from the target
-project's existing documentation, create a `type=docs` job for Documenter. Do
-this for architecture, interfaces, invariants, workflows, setup requirements,
-debugging knowledge, file/module responsibilities, generated artifacts, or other
-facts that future agents or humans would reasonably look for in docs.
-
-Before creating the docs job, check the target project's existing documentation
-enough to state why the information is missing, incomplete, misleading, or too
-scattered. The docs job spec MUST be an essay, not a terse note. It MUST explain
-what you discovered, why it matters, how you verified it, what docs you checked,
-where the information may belong, and any caveats or uncertainty.
-
-Create documentation jobs as additional follow-up work. Do not replace the
-normal integration handoff unless the current job spec explicitly says to.
-
-## Processing a Commit Job
-
-1. Verify the spec identifies the approved review or explicit authority for the
-   integration.
-2. Read the original job, review job, target project rules, and referenced
-   artifact. For code integrations, verify that the branch and worktree match
-   the approved review.
-3. Perform only the integration requested by the spec.
-4. Run the verification required by the spec after integration.
-5. Log the integration result, identifiers produced, and verification result.
-6. Create the required follow-up job.
-7. Complete the commit job with `bin/job-done <job-id> -m "<summary>"` after
-   the follow-up exists.
-
-Do not invent extra publication steps. Pushes, releases, branch deletion, worktree
-cleanup, and artifact publication happen only when the spec or project docs
-explicitly require them.
-
-## Follow-Up Routing
-
-### Success
-
-Create a `type=plan` notification for Planner. Include:
-
-- Original job.
-- Review job.
-- Commit/integration job.
-- Artifact integrated.
-- Commit hash, merge ID, artifact ID, or equivalent result if applicable.
-- Verification performed.
-- Any next-phase dependency now satisfied.
-
-### Integration Failure
-
-If the integration step ran and exposed a fixable problem, create a `type=code`
-fix job for Coder. Include:
-
-- Original job and approved review.
-- Artifact, branch, and worktree to fix.
-- Exact failure output or reproduction steps.
-- Verification expected after the fix.
-- Required review follow-up job ID.
-
-Then complete the commit job with `bin/job-done <job-id> -m "<summary>"`. The
-workflow continues through the fix job.
-
-### Blocked
-
-If the commit job cannot be processed at all, create a planner notification, log
-the blocker, and fail the commit job with `bin/job-fail <job-id> -m "<reason>"`
-unless the blocker is clearly temporary and release is appropriate under
-`AGENTS.md`.
-
-Examples: missing approved review, missing artifact, invalid spec, inaccessible
-project path, or contradictory instructions.
+On a blocker, follow the generic problem handling in `AGENTS.md`.
 
 ## Problems
 
-- Only integrate work that has the approval or authority required by the spec.
-- Do not review implementation quality again except to confirm the approved
-  artifact is the artifact being integrated.
-- Do not create review jobs directly after success; notify Planner.
-- Send fixable integration failures to Coder.
+Do not review implementation quality again except to confirm that the approved
+artifact is the artifact being integrated. Do not make normal development
+commits in the task worktree. Do not push, release, clean up worktrees, or
+perform unrelated repository maintenance unless the spec requires it.

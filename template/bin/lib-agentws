@@ -1,24 +1,52 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 JOBS_DIR="${JOBS_DIR:-$AGENTWS_ROOT/jobs}"
+TASKS_DIR="${TASKS_DIR:-$AGENTWS_ROOT/tasks}"
 VALID_STATUSES="${VALID_STATUSES:-pending claimed running done failed}"
+VALID_TASK_STATES="${VALID_TASK_STATES:-open done}"
 
 die() {
     echo "error: $*" >&2
     exit 1
 }
 
-validate_job_id() {
-    local id="${1:-}"
+timestamp() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
 
-    if ! [[ "$id" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-        die "invalid job ID '$id' - only alphanumeric, dot, underscore, and hyphen allowed"
-    fi
+agent_host() {
+    hostname 2>/dev/null || uname -n
+}
+
+validate_name() {
+    label="$1"
+    value="${2:-}"
+
+    case "$value" in
+        ""|*[!A-Za-z0-9._-]*)
+            die "invalid $label '$value' - only alphanumeric, dot, underscore, and hyphen allowed"
+            ;;
+    esac
+}
+
+validate_job_id() {
+    validate_name "job ID" "${1:-}"
+}
+
+validate_task_id() {
+    validate_name "task ID" "${1:-}"
+}
+
+validate_role() {
+    validate_name "role" "${1:-}"
+}
+
+validate_agent_id() {
+    validate_name "agent ID" "${1:-}"
 }
 
 is_valid_status() {
-    local candidate="${1:-}"
-    local status
+    candidate="${1:-}"
 
     for status in $VALID_STATUSES; do
         [ "$status" = "$candidate" ] && return 0
@@ -28,7 +56,7 @@ is_valid_status() {
 }
 
 require_valid_status() {
-    local status="${1:-}"
+    status="${1:-}"
 
     if ! is_valid_status "$status"; then
         echo "error: invalid status '$status'" >&2
@@ -37,61 +65,101 @@ require_valid_status() {
     fi
 }
 
+is_valid_task_state() {
+    candidate="${1:-}"
+
+    for state in $VALID_TASK_STATES; do
+        [ "$state" = "$candidate" ] && return 0
+    done
+
+    return 1
+}
+
+require_valid_task_state() {
+    state="${1:-}"
+
+    if ! is_valid_task_state "$state"; then
+        echo "error: invalid task state '$state'" >&2
+        echo "valid task states: $VALID_TASK_STATES" >&2
+        exit 1
+    fi
+}
+
 require_jobs_dir() {
     [ -d "$JOBS_DIR" ] || die "jobs directory '$JOBS_DIR' does not exist; run bin/job-init first"
 }
 
-require_nonnegative_integer() {
-    local name="$1"
-    local value="${2:-}"
+require_tasks_dir() {
+    [ -d "$TASKS_DIR" ] || die "tasks directory '$TASKS_DIR' does not exist; run bin/job-init first"
+}
 
-    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-        die "$name must be a non-negative integer"
-    fi
+require_positive_integer() {
+    name="$1"
+    value="${2:-}"
+
+    case "$value" in
+        ""|*[!0-9]*)
+            die "$name must be a positive integer"
+            ;;
+    esac
+
+    [ "$value" -gt 0 ] || die "$name must be greater than zero"
 }
 
 read_status() {
-    local job_dir="$1"
+    job_dir="$1"
     cat "$job_dir/status" 2>/dev/null || echo "unknown"
 }
 
-agent_pid() {
-    local pid comm parent
+write_file_atomic() {
+    path="$1"
+    content="$2"
+    tmp="$path.tmp.$$"
 
-    pid="${PPID}"
-    while [ -n "$pid" ] && [ "$pid" != "0" ]; do
-        comm="$(ps -p "$pid" -o comm= 2>/dev/null | tr -d '[:space:]' || true)"
-        case "$comm" in
-            bash|sh|dash|zsh|ksh|fish|timeout|env)
-                parent="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]' || true)"
-                [ -n "$parent" ] || break
-                pid="$parent"
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
-
-    echo "$pid"
+    printf '%s\n' "$content" > "$tmp" || die "cannot write temporary file '$tmp'"
+    mv -f "$tmp" "$path" || {
+        rm -f "$tmp"
+        die "cannot replace '$path'"
+    }
 }
 
-agent_key() {
-    echo "$(hostname -s):$(agent_pid)"
-}
+require_agent_owner() {
+    action="$1"
+    job_id="$2"
+    job_dir="$3"
+    agent_id="$4"
 
-require_owner() {
-    local action="$1"
-    local job_id="$2"
-    local job_dir="$3"
-    local owner current
+    validate_agent_id "$agent_id"
+    [ -f "$job_dir/agent-id" ] || die "cannot $action job '$job_id': missing agent-id"
+    expected="$(cat "$job_dir/agent-id" 2>/dev/null || true)"
 
-    [ -f "$job_dir/agent.id" ] || die "cannot $action job '$job_id': missing agent.id"
-
-    owner="$(cut -d: -f1-2 "$job_dir/agent.id")"
-    current="$(agent_key)"
-
-    if [ "$owner" != "$current" ]; then
-        die "cannot $action job '$job_id': owned by $owner, current agent is $current"
+    if [ "$expected" != "$agent_id" ]; then
+        die "cannot $action job '$job_id': owned by '$expected', not '$agent_id'"
     fi
+}
+
+append_log() {
+    job_dir="$1"
+    summary="$2"
+    detail="${3:-}"
+
+    {
+        printf '## %s - %s\n\n' "$(timestamp)" "$summary"
+        if [ -n "$detail" ]; then
+            printf '%s\n\n' "$detail"
+        fi
+    } >> "$job_dir/log.md"
+}
+
+append_task_log() {
+    task_dir="$1"
+    summary="$2"
+    detail="${3:-}"
+
+    {
+        printf '## %s - %s\n\n' "$(timestamp)" "$summary"
+        if [ -n "$detail" ]; then
+            printf '%s\n\n' "$detail"
+        fi
+    } >> "$task_dir/log.md"
 }

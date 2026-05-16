@@ -1,0 +1,128 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AGENTWS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUN_DIR="$AGENTWS_ROOT/agents/.team-runs"
+
+. "$AGENTWS_ROOT/bin/lib-agentws"
+
+usage() {
+    cat <<'EOF'
+Usage: tools/run_agentws [--verbose] [team-file]
+
+Run the named AgentWS team. Team file format:
+
+  <name> <role> <agent> [model]
+
+If team-file is omitted, agentws/default.team is used. Blank lines and #
+comments are ignored. Agent is one of: pi, codex, claude.
+
+Options:
+  --verbose   Print each agent's rendered transcript output to this terminal.
+EOF
+}
+
+agent_flag() {
+    case "$1" in
+        pi) echo "--pi" ;;
+        codex) echo "--codex" ;;
+        claude) echo "--claude" ;;
+        *) die "invalid agent '$1' in team file; expected pi, codex, or claude" ;;
+    esac
+}
+
+VERBOSE=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            usage >&2
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+[ "$#" -le 1 ] || {
+    usage >&2
+    exit 1
+}
+
+TEAM_FILE="${1:-$AGENTWS_ROOT/default.team}"
+case "$TEAM_FILE" in
+    */*) ;;
+    *) TEAM_FILE="$AGENTWS_ROOT/$TEAM_FILE" ;;
+esac
+
+[ -f "$TEAM_FILE" ] || die "team file not found: $TEAM_FILE"
+
+mkdir -p "$RUN_DIR"
+
+line_no=0
+pids=""
+
+stop_team() {
+    echo "stopping AgentWS team" >&2
+    for pid in $pids; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+    exit 130
+}
+
+trap stop_team INT TERM
+
+while IFS= read -r line || [ -n "$line" ]; do
+    line_no=$((line_no + 1))
+    case "$line" in
+        ""|\#*) continue ;;
+    esac
+
+    set -- $line
+    [ "$#" -ge 3 ] || die "$TEAM_FILE:$line_no: expected <name> <role> <agent> [model]"
+    [ "$#" -le 4 ] || die "$TEAM_FILE:$line_no: too many fields"
+
+    name="$1"
+    role="$2"
+    agent="$3"
+    model="${4:-}"
+
+    validate_agent_id "$name"
+    validate_role "$role"
+    flag="$(agent_flag "$agent")"
+
+    (
+        while :; do
+            headless_arg="--headless"
+            [ "$VERBOSE" -eq 1 ] && headless_arg=""
+            if [ -n "$model" ]; then
+                "$SCRIPT_DIR/agent" $headless_arg "$flag" -m "$model" "$role" "$name"
+            else
+                "$SCRIPT_DIR/agent" $headless_arg "$flag" "$role" "$name"
+            fi
+            rc="$?"
+            printf '%s\n' "$rc" > "$RUN_DIR/$name.last-status" 2>/dev/null || true
+            printf '%s\n' "$(timestamp)" > "$RUN_DIR/$name.last-exit" 2>/dev/null || true
+            sleep 1
+        done
+    ) &
+    pid="$!"
+    pids="$pids $pid"
+    printf '%s\n' "$pid" > "$RUN_DIR/$name.pid"
+    echo "started $name ($role, $agent${model:+, $model}) pid=$pid"
+done < "$TEAM_FILE"
+
+[ -n "$pids" ] || die "team file has no agents: $TEAM_FILE"
+
+wait

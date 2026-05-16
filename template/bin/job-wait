@@ -1,74 +1,61 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 AGENTWS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$AGENTWS_ROOT/bin/lib-agentws"
 
 usage() {
-    echo "Usage: job-wait [-t <type>] [--poll <seconds>]"
-    echo ""
-    echo "Wait (block) until a pending job is available."
-    echo "Returns immediately if jobs are already pending."
-    echo ""
-    echo "Options:"
-    echo "  -t <type>          Only wait for jobs of this type"
-    echo "  --poll <seconds>   Polling interval (default: 5)"
+    echo "Usage: job-wait [-r <role>]"
     exit 1
 }
 
-JOB_TYPE=""
-POLL_INTERVAL=5
+JOB_ROLE=""
+WAIT_INTERVAL="${AGENTWS_WAIT_INTERVAL:-5}"
+require_positive_integer "AGENTWS_WAIT_INTERVAL" "$WAIT_INTERVAL"
 
-while [ $# -gt 0 ]; do
+while [ "$#" -gt 0 ]; do
     case "$1" in
-        -t)
-            [ $# -ge 2 ] || die "-t requires a type"
-            JOB_TYPE="$2"
+        -r|--role)
+            [ "$#" -ge 2 ] || die "$1 requires a role"
+            JOB_ROLE="$2"
             shift 2
             ;;
-        --poll)
-            [ $# -ge 2 ] || die "--poll requires seconds"
-            POLL_INTERVAL="$2"
-            require_nonnegative_integer "--poll" "$POLL_INTERVAL"
-            [ "$POLL_INTERVAL" -gt 0 ] || die "--poll must be greater than zero"
-            shift 2
+        --help|-h)
+            usage
             ;;
-        --help|-h) usage ;;
-        *) echo "error: unknown option '$1'" >&2; usage ;;
+        *)
+            die "unknown option '$1'"
+            ;;
     esac
 done
 
+[ -n "$JOB_ROLE" ] && validate_role "$JOB_ROLE"
 require_jobs_dir
 
-# Check if there's a pending job matching our criteria
 has_pending_job() {
     for job_dir in "$JOBS_DIR"/*; do
         [ -d "$job_dir" ] || continue
+        [ -f "$job_dir/status" ] || continue
+        [ -f "$job_dir/role" ] || continue
 
-        local status
-        status=$(cat "$job_dir/status" 2>/dev/null || echo "")
+        status="$(cat "$job_dir/status" 2>/dev/null || true)"
         [ "$status" = "pending" ] || continue
 
-        # Check type filter
-        if [ -n "$JOB_TYPE" ]; then
-            local jtype
-            jtype=$(cat "$job_dir/type" 2>/dev/null || echo "")
-            [ "$jtype" = "$JOB_TYPE" ] || continue
+        role="$(cat "$job_dir/role" 2>/dev/null || true)"
+        if [ -n "$JOB_ROLE" ] && [ "$role" != "$JOB_ROLE" ]; then
+            continue
         fi
 
-        # Check if not locked
         [ ! -d "$job_dir/lock" ] || continue
-
-        return 0  # Found one!
+        return 0
     done
+
     return 1
 }
 
-# Main wait loop
-while true; do
+while :; do
     if has_pending_job; then
-        # Job available - exit successfully
         exit 0
     fi
-    sleep "$POLL_INTERVAL"
+    sleep "$WAIT_INTERVAL"
 done

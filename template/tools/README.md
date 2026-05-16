@@ -1,46 +1,82 @@
 # AgentWS Tools
 
-This directory contains project-local helper tools for AgentWS.
+This directory contains local helper tools for an installed AgentWS directory.
 
-## `run_agentws.sh`
+The shell launchers require `sh` and whichever agent CLI is selected (`pi`,
+`codex`, or `claude`). `tools/agent` uses Python 3 stdlib only.
 
-`run_agentws.sh` starts a tmux session for the current Git repository and
-launches one `pi` agent per row in `agentws/default.team`.
+## `run_agentws`
 
-From the repository root:
+`run_agentws` starts a named team from a team file and restarts each agent as
+it exits. By default it runs agents headless. Use `--verbose` to print each
+agent's rendered transcript output to the terminal, prefixed by agent name.
 
 ```sh
-agentws/tools/run_agentws.sh <project-name>
-agentws/tools/run_agentws.sh -m sonnet <project-name>
-agentws/tools/run_agentws.sh -n <project-name>
+agentws/tools/run_agentws --verbose
+agentws/tools/run_agentws
+```
+
+Team file format:
+
+```text
+# <name> <role> <agent> [model]
+planner-1 planner pi
+implementer-1 implementer codex
+reviewer-1 reviewer claude sonnet
+```
+
+## `agent`
+
+`agent` starts one named agent, claims one pending job for that agent's role,
+records the job in `agents/<agent-name>/current-job`, and renders CLI event
+output to `agents/<agent-name>/transcript.log`.
+By default it also prints the rendered transcript to stdout. Use `--headless`
+to write files only.
+
+From the target project root:
+
+```sh
+# Start a Pi planner agent.
+agentws/tools/agent --pi planner planner-1
+
+# Start a named Codex implementer agent.
+agentws/tools/agent --codex implementer implementer-1
+
+# Start a Claude reviewer agent with a specific model.
+agentws/tools/agent --claude -m sonnet reviewer reviewer-1
 ```
 
 Options:
 
-- `-m <model>`: pass `--model <model>` to every `pi` agent.
-- `-n`: create the tmux session without attaching.
-- `-c <path>`: use a different team file path.
+- `--pi`: use Pi. This is the default.
+- `--codex`: use Codex CLI.
+- `--claude`: use Claude Code.
+- `--headless`: do not print the rendered transcript to stdout.
+- `-m <model>`: pass a model name to the selected CLI.
 
-The final positional argument is the tmux session name. For human-run project
-sessions, pass the project name explicitly. If omitted, the session name defaults
-to `agentws-session`.
+CLI stderr is saved in `error.log`.
 
-The default team file is resolved from the current Git repository root:
+The agent name is mandatory. `agent` calls `bin/agent-new`, `bin/job-wait`, and
+`bin/job-claim`; the agent itself starts and completes the job according to
+`AGENTS.md`. The rendered transcript is stored only in
+`agents/<agent-name>/transcript.log`; the job log points to that file.
 
-```text
-<git-root>/agentws/default.team
+## Task Commands
+
+Task commands operate on local folders under `agentws/tasks/`:
+
+```sh
+agentws/bin/task-create <task-id> <spec-file>
+agentws/bin/task-show <task-id>
+agentws/bin/task-comment <task-id> <message>
+agentws/bin/task-state <task-id> open
+agentws/bin/task-state <task-id> done -m "completed"
+agentws/bin/task-result <task-id> <result-file>
+agentws/bin/task-list
 ```
 
-Team file rows are:
+## `bin/agent-new`
 
-```text
-<tmux-window-name> <agent-role>
-```
-
-Blank lines and `#` comments are ignored, including inline comments.
-Each `<agent-role>` must have a matching `agentws/roles/<agent-role>.md` file.
-Each launched agent receives only:
-
-```text
-You are a <agent-role>
-```
+`bin/agent-new <agent-id> <role>` creates a named agent directory when needed
+and prints its path. If the agent already has a claimed or running job, it exits
+with an error instead.
