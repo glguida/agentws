@@ -756,6 +756,7 @@ h1 {
   font-size: 14px;
   line-height: 1.55;
   overflow-wrap: anywhere;
+  overflow: hidden;
 }
 
 .chat-message.user .chat-bubble {
@@ -799,6 +800,7 @@ h1 {
 .chat-bubble pre {
   white-space: pre-wrap;
   overflow: auto;
+  max-width: 100%;
   background: #181a1b;
   color: #eff4ef;
   border-radius: 8px;
@@ -810,6 +812,35 @@ h1 {
   background: transparent;
   color: inherit;
   padding: 0;
+}
+
+.chat-bubble .table-wrap {
+  max-width: 100%;
+  overflow: auto;
+}
+
+.chat-bubble table {
+  width: 100%;
+  min-width: 420px;
+  border-collapse: collapse;
+}
+
+.chat-bubble th,
+.chat-bubble td {
+  border: 1px solid var(--line);
+  padding: 7px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.chat-bubble th {
+  background: var(--paper-soft);
+}
+
+.chat-truncation {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
 }
 
 .chat-trace {

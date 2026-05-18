@@ -2,6 +2,12 @@
 
 const DEFAULT_ROOT = "";
 const LIVE_REFRESH_MS = 750;
+const CHAT_REFRESH_MS = 1000;
+const CHAT_STATE_REFRESH_MS = 3000;
+const CHAT_TRANSCRIPT_MAX_BYTES = 512 * 1024;
+const CHAT_MAX_MESSAGES = 80;
+const CHAT_RENDER_TEXT_LIMIT = 180 * 1024;
+const TRANSCRIPT_SECTION_TITLES = new Set(["User", "Assistant", "Thinking", "Reasoning", "Tool Call"]);
 
 const state = {
   snapshot: null,
@@ -15,6 +21,9 @@ const state = {
   chatWasBusy: false,
   chatPinned: true,
   chatMessageKeys: [],
+  chatTranscriptInFlight: false,
+  chatStateInFlight: false,
+  chatStateLastRefresh: 0,
   view: initialView(),
   query: "",
   root: DEFAULT_ROOT
@@ -516,6 +525,7 @@ async function refreshChatTranscript(options = {}) {
   const { scroll = false } = options;
   const thread = document.querySelector("#chatThread");
   if (!thread || state.view !== "chat") return;
+  if (state.chatTranscriptInFlight) return;
 
   const agent = consoleAgent();
   if (!agent) {
@@ -523,26 +533,31 @@ async function refreshChatTranscript(options = {}) {
     return;
   }
 
+  state.chatTranscriptInFlight = true;
   try {
-    const response = await fetch(`/api/file?type=agent&id=${encodeURIComponent(agent.id)}&file=transcript.log&tail=1&maxBytes=1048576`);
+    const response = await fetch(`/api/file?type=agent&id=${encodeURIComponent(agent.id)}&file=transcript.log&tail=1&maxBytes=${CHAT_TRANSCRIPT_MAX_BYTES}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "transcript load failed");
     const renderKey = `${payload.size || 0}:${payload.text?.length || 0}`;
     const isNewContent = thread.dataset.renderKey !== renderKey;
     const stickToBottom = scroll || state.chatPinned || isNearThreadBottom(thread);
     if (isNewContent) {
-      const messages = parseTranscriptMessages(payload.text || "");
+      const messages = visibleChatMessages(parseTranscriptMessages(payload.text || ""));
       updateChatMessages(thread, messages);
       thread.dataset.renderKey = renderKey;
     }
     if (stickToBottom) scrollChatToBottom(thread);
   } catch (error) {
     updateChatError(thread, error.message);
+  } finally {
+    state.chatTranscriptInFlight = false;
   }
 }
 
 async function refreshChatState() {
   if (state.view !== "chat") return;
+  if (state.chatStateInFlight) return;
+  state.chatStateInFlight = true;
   try {
     const response = await fetch("/api/snapshot");
     const payload = await response.json();
@@ -554,8 +569,11 @@ async function refreshChatState() {
     const agent = consoleAgent();
     state.chatDraft = previousDraft;
     updateChatAgentState(agent);
+    state.chatStateLastRefresh = Date.now();
   } catch (error) {
     els.railStatus.classList.add("error");
+  } finally {
+    state.chatStateInFlight = false;
   }
 }
 
@@ -563,6 +581,7 @@ function parseTranscriptMessages(text) {
   const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
   const messages = [];
   let current = null;
+  const fallback = [];
 
   const flush = () => {
     if (!current) return;
@@ -572,14 +591,16 @@ function parseTranscriptMessages(text) {
   };
 
   for (const line of lines) {
-    const heading = line.match(/^###\s+(.+?)\s*$/);
-    if (heading) {
+    const title = transcriptSectionTitle(line);
+    if (title) {
       flush();
-      const title = heading[1].trim();
       current = { role: chatRoleFor(title), title, lines: [] };
       continue;
     }
-    if (!current) continue;
+    if (!current) {
+      if (line.trim() && !line.includes("earlier content truncated")) fallback.push(line);
+      continue;
+    }
     if (/^\[\d{4}-\d{2}-\d{2}T/.test(line)) {
       flush();
       continue;
@@ -587,7 +608,18 @@ function parseTranscriptMessages(text) {
     current.lines.push(line);
   }
   flush();
+  if (!messages.length) {
+    const tail = fallback.join("\n").trim();
+    if (tail) messages.push({ role: "tail", title: "Transcript Tail", text: tail });
+  }
   return messages;
+}
+
+function transcriptSectionTitle(line) {
+  const heading = line.match(/^###\s+(.+?)\s*$/);
+  if (!heading) return "";
+  const title = heading[1].trim();
+  return TRANSCRIPT_SECTION_TITLES.has(title) ? title : "";
 }
 
 function chatRoleFor(title) {
@@ -602,6 +634,10 @@ function renderChatMessages(messages) {
   return messages.map((message, index) => renderChatMessage(message, chatMessageKey(message, index))).join("");
 }
 
+function visibleChatMessages(messages) {
+  return messages.slice(-CHAT_MAX_MESSAGES);
+}
+
 function updateChatMessages(thread, messages) {
   if (!messages.length) {
     if (!thread.querySelector(".empty-note") || thread.querySelector("[data-chat-key]")) {
@@ -614,6 +650,7 @@ function updateChatMessages(thread, messages) {
   }
 
   const keys = messages.map(chatMessageKey);
+  const signatures = messages.map(chatMessageSignature);
   ensureChatBottomSentinel(thread);
   thread.querySelectorAll(".empty-note").forEach((node) => node.remove());
 
@@ -629,8 +666,8 @@ function updateChatMessages(thread, messages) {
 
   messages.slice(0, commonLength).forEach((message, index) => {
     const node = nodes[index];
-    if (node.dataset.chatText === message.text) return;
-    const replacement = htmlToElement(renderChatMessage(message, keys[index]));
+    if (node.dataset.chatSig === signatures[index]) return;
+    const replacement = htmlToElement(renderChatMessage(message, keys[index], signatures[index]));
     node.replaceWith(replacement);
   });
 
@@ -639,7 +676,7 @@ function updateChatMessages(thread, messages) {
   const sentinel = ensureChatBottomSentinel(thread);
   messages.slice(nodes.length).forEach((message, offset) => {
     const index = nodes.length + offset;
-    sentinel.insertAdjacentElement("beforebegin", htmlToElement(renderChatMessage(message, keys[index])));
+    sentinel.insertAdjacentElement("beforebegin", htmlToElement(renderChatMessage(message, keys[index], signatures[index])));
   });
 
   state.chatMessageKeys = keys;
@@ -650,23 +687,44 @@ function updateChatError(thread, message) {
   state.chatMessageKeys = [];
 }
 
-function renderChatMessage(message, key = chatMessageKey(message, 0)) {
-  const attrs = `data-chat-key="${escapeAttr(key)}" data-chat-text="${escapeAttr(message.text)}"`;
+function renderChatMessage(message, key = chatMessageKey(message, 0), signature = chatMessageSignature(message)) {
+  const attrs = `data-chat-key="${escapeAttr(key)}" data-chat-sig="${escapeAttr(signature)}"`;
+  const renderText = chatRenderableText(message.text);
+  const truncation = renderText.truncated
+    ? `<p class="chat-truncation">Showing the latest part of a very large message.</p>`
+    : "";
+  if (message.role === "tail") {
+    return `
+      <article class="chat-message assistant chat-tail" ${attrs}>
+        <div class="chat-bubble">
+          ${truncation || `<p class="chat-truncation">Showing recent transcript tail.</p>`}
+          <pre><code>${escapeHtml(renderText.text)}</code></pre>
+        </div>
+      </article>
+    `;
+  }
   if (message.role === "trace") {
+    const traceBody = renderText.truncated
+      ? `<pre><code>${escapeHtml(renderText.text)}</code></pre>`
+      : markdownToHtml(renderText.text);
     return `
       <details class="chat-trace" ${attrs}>
         <summary>${escapeHtml(message.title)}</summary>
-        <div>${markdownToHtml(message.text)}</div>
+        <div>${truncation}${traceBody}</div>
       </details>
     `;
   }
 
   const isUser = message.role === "user";
-  const body = isUser ? plainTextToHtml(message.text) : markdownToHtml(message.text);
+  const body = isUser
+    ? plainTextToHtml(renderText.text)
+    : renderText.truncated
+      ? `<pre><code>${escapeHtml(renderText.text)}</code></pre>`
+      : markdownToHtml(renderText.text);
   return `
     <article class="chat-message ${isUser ? "user" : "assistant"}" ${attrs}>
       <div class="chat-bubble">
-        ${body}
+        ${truncation}${body}
       </div>
     </article>
   `;
@@ -674,6 +732,30 @@ function renderChatMessage(message, key = chatMessageKey(message, 0)) {
 
 function chatMessageKey(message, index) {
   return `${index}:${message.role}:${message.title}`;
+}
+
+function chatMessageSignature(message) {
+  const text = String(message.text || "");
+  return `${text.length}:${hashString(text)}`;
+}
+
+function chatRenderableText(text) {
+  const value = String(text || "");
+  if (value.length <= CHAT_RENDER_TEXT_LIMIT) return { text: value, truncated: false };
+  return {
+    text: value.slice(-CHAT_RENDER_TEXT_LIMIT),
+    truncated: true
+  };
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function htmlToElement(html) {
@@ -731,8 +813,10 @@ function startChatTimer() {
   stopChatTimer();
   state.chatTimer = setInterval(() => {
     refreshChatTranscript();
-    refreshChatState();
-  }, LIVE_REFRESH_MS);
+    if (Date.now() - state.chatStateLastRefresh >= CHAT_STATE_REFRESH_MS) {
+      refreshChatState();
+    }
+  }, CHAT_REFRESH_MS);
 }
 
 function stopChatTimer() {
