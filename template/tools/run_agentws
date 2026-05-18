@@ -133,8 +133,11 @@ while IFS= read -r line || [ -n "$line" ]; do
         while :; do
             headless_arg="--headless"
             [ "$VERBOSE" -eq 1 ] && headless_arg=""
-            run_agent_once "$headless_arg" "$agent" "$model" "$role" "$name"
-            rc="$?"
+            if run_agent_once "$headless_arg" "$agent" "$model" "$role" "$name"; then
+                rc=0
+            else
+                rc="$?"
+            fi
             printf '%s\n' "$rc" > "$RUN_DIR/$name.last-status" 2>/dev/null || true
             printf '%s\n' "$(timestamp)" > "$RUN_DIR/$name.last-exit" 2>/dev/null || true
             sleep 1

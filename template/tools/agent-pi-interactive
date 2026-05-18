@@ -175,6 +175,12 @@ def main() -> int:
     stop_event = threading.Event()
     is_streaming = threading.Event()
     stdin_lock = threading.Lock()
+    shutdown_signals = (signal.SIGTERM, signal.SIGINT)
+    previous_handlers = {signum: signal.getsignal(signum) for signum in shutdown_signals}
+
+    def request_shutdown(signum: int, _frame: Any) -> None:
+        stop_event.set()
+        raise agent_mod.ShutdownRequested(signum)
 
     def set_streaming(active: bool) -> None:
         if active:
@@ -188,6 +194,9 @@ def main() -> int:
         transcript.write(message.rstrip() + "\n")
 
     try:
+        for signum in shutdown_signals:
+            signal.signal(signum, request_shutdown)
+
         transcript.event(
             "interactive run start",
             "\n".join(
@@ -336,7 +345,12 @@ def main() -> int:
         rc = proc.returncode if proc.returncode is not None else 1
         transcript.event("interactive run end", f"exit: {rc}")
         return rc
+    except agent_mod.ShutdownRequested as exc:
+        transcript.event("interactive run interrupted", f"signal: {exc.signum}")
+        return 128 + exc.signum
     finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
         stop_event.set()
         agent_mod.write_file(agent_busy, "0\n")
         if proc is not None and proc.poll() is None:

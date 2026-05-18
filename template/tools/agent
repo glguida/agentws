@@ -8,6 +8,7 @@ import argparse
 import json
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -26,6 +27,12 @@ def timestamp() -> str:
 def die(message: str, code: int = 1) -> None:
     print(f"error: {message}", file=sys.stderr)
     raise SystemExit(code)
+
+
+class ShutdownRequested(Exception):
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"signal {signum}")
+        self.signum = signum
 
 
 def validate_name(label: str, value: str) -> None:
@@ -513,8 +520,17 @@ def main() -> int:
         mirror_prefix=f"{args.agent_name}: ",
     )
     error_files = [agent_error.open("a", encoding="utf-8", buffering=1)]
+    proc: subprocess.Popen[str] | None = None
+    shutdown_signals = (signal.SIGTERM, signal.SIGINT)
+    previous_handlers = {signum: signal.getsignal(signum) for signum in shutdown_signals}
+
+    def request_shutdown(signum: int, _frame: Any) -> None:
+        raise ShutdownRequested(signum)
 
     try:
+        for signum in shutdown_signals:
+            signal.signal(signum, request_shutdown)
+
         transcript.event(
             "run start",
             "\n".join(
@@ -573,7 +589,19 @@ def main() -> int:
 
         transcript.event("run end", f"exit: {rc}")
         return rc
+    except ShutdownRequested as exc:
+        transcript.event("run interrupted", f"signal: {exc.signum}")
+        return 128 + exc.signum
     finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
         subprocess.run(
             [
                 str(root / "bin" / "job-release"),

@@ -11,6 +11,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_DIR = Path(__file__).resolve().parent / "agentws-public"
 DEFAULT_PORT = 4137
+PROCESS_CHECK_INTERVAL = 1.0
+PROCESS_RESTART_DELAY = 1.0
 VALID_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 ALLOWED_FILES = {
     "task": {"log.md", "spec.md", "result.md", "state"},
@@ -716,17 +719,100 @@ def start_console(root: Path, model: str | None, verbose: bool):
 
 
 def stop_team(proc):
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
+    # The leader may already be gone while child agents remain in its process group.
+    running = proc.poll() is None
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
+        return
+    if not running:
         return
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.wait(timeout=5)
+
+
+class ProcessSupervisor:
+    def __init__(
+        self,
+        label,
+        starter,
+        check_interval=PROCESS_CHECK_INTERVAL,
+        restart_delay=PROCESS_RESTART_DELAY,
+    ):
+        self.label = label
+        self.starter = starter
+        self.check_interval = check_interval
+        self.restart_delay = restart_delay
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        self.proc = None
+        self.thread = None
+
+    def start(self):
+        proc = self.starter()
+        with self.lock:
+            self.proc = proc
+        print(f"AgentWS {self.label} started pid={proc.pid}")
+        self.thread = threading.Thread(
+            target=self.watch,
+            name=f"agentws-{self.label}-supervisor",
+            daemon=True,
+        )
+        self.thread.start()
+
+    def current_proc(self):
+        with self.lock:
+            return self.proc
+
+    def set_proc(self, proc):
+        with self.lock:
+            self.proc = proc
+
+    def watch(self):
+        while not self.stop_event.wait(self.check_interval):
+            proc = self.current_proc()
+            if proc is None:
+                continue
+            rc = proc.poll()
+            if rc is None:
+                continue
+
+            self.set_proc(None)
+            if self.stop_event.is_set():
+                return
+            print(f"AgentWS {self.label} exited with status {rc}; restarting.", file=sys.stderr)
+            stop_team(proc)
+            self.restart()
+
+    def restart(self):
+        while not self.stop_event.is_set():
+            try:
+                proc = self.starter()
+            except (OSError, RuntimeError, ValueError) as exc:
+                print(f"error: failed to restart AgentWS {self.label}: {exc}", file=sys.stderr)
+                self.stop_event.wait(self.restart_delay)
+                continue
+
+            if self.stop_event.is_set():
+                stop_team(proc)
+                return
+
+            self.set_proc(proc)
+            print(f"AgentWS {self.label} restarted pid={proc.pid}")
+            return
+
+    def stop(self):
+        self.stop_event.set()
+        proc = self.current_proc()
+        self.set_proc(None)
+        stop_team(proc)
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=self.check_interval + self.restart_delay + 1)
 
 
 def main():
@@ -750,8 +836,7 @@ def main():
     config = Config(root=Path(args.root).expanduser().resolve(), host=args.host, port=args.port)
     ViewerHandler.config = config
 
-    team_proc = None
-    console_proc = None
+    supervisors = []
     server = bind_server(config)
     if server is None:
         return 1
@@ -764,10 +849,18 @@ def main():
     try:
         if not args.no_team:
             if not args.no_console:
-                console_proc = start_console(config.root, args.console_model, args.verbose)
-                print(f"AgentWS console started pid={console_proc.pid}")
-            team_proc = start_team(config.root, args.team_file, args.verbose)
-            print(f"AgentWS team started pid={team_proc.pid}")
+                console_supervisor = ProcessSupervisor(
+                    "console",
+                    lambda: start_console(config.root, args.console_model, args.verbose),
+                )
+                console_supervisor.start()
+                supervisors.append(console_supervisor)
+            team_supervisor = ProcessSupervisor(
+                "team",
+                lambda: start_team(config.root, args.team_file, args.verbose),
+            )
+            team_supervisor.start()
+            supervisors.append(team_supervisor)
 
         print(f"AgentWS running at {server_url(server, config)}")
         print(f"Reading AgentWS root: {config.root}")
@@ -781,8 +874,8 @@ def main():
         return 1
     finally:
         server.server_close()
-        stop_team(team_proc)
-        stop_team(console_proc)
+        for supervisor in reversed(supervisors):
+            supervisor.stop()
 
 
 if __name__ == "__main__":
