@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -47,6 +48,31 @@ def wait_for(predicate, timeout=3.0):
 
 
 class ProcessSupervisorTest(unittest.TestCase):
+    def test_write_all_nonblocking_writes_complete_payload(self):
+        read_fd, write_fd = os.pipe()
+        os.set_blocking(write_fd, False)
+        payload = b"x" * (256 * 1024)
+        chunks = []
+
+        def drain_pipe():
+            while True:
+                chunk = os.read(read_fd, 4096)
+                if not chunk:
+                    return
+                chunks.append(chunk)
+                time.sleep(0.001)
+
+        reader = threading.Thread(target=drain_pipe)
+        reader.start()
+        try:
+            AGENTWS.write_all_nonblocking(write_fd, payload, timeout=3.0)
+        finally:
+            os.close(write_fd)
+            reader.join(timeout=3.0)
+            os.close(read_fd)
+
+        self.assertEqual(payload, b"".join(chunks))
+
     def test_restarts_exited_process(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

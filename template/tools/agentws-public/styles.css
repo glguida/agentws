@@ -873,7 +873,7 @@ h1 {
   min-width: 0;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 76px;
+  grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto auto;
   gap: 8px;
   align-items: end;
@@ -908,7 +908,15 @@ h1 {
   opacity: 0.6;
 }
 
+.chat-actions {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  justify-content: flex-end;
+}
+
 .chat-action-button {
+  width: 76px;
   height: 44px;
   border-radius: 8px;
   color: #fff;
@@ -925,15 +933,33 @@ h1 {
   background: #1d704d;
 }
 
-.chat-action-button.stop {
+.chat-steer-button {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
   background: var(--coral);
+  color: #fff;
+  cursor: pointer;
 }
 
-.chat-action-button.stop:hover {
+.chat-steer-button:hover {
   background: #a8372d;
 }
 
-.chat-action-button:disabled {
+.chat-steer-button[hidden] {
+  display: none;
+}
+
+.chat-steer-button svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.chat-action-button:disabled,
+.chat-steer-button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -1460,7 +1486,11 @@ h1 {
   }
 
   .chat-composer {
-    grid-template-columns: minmax(0, 1fr) 66px;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .chat-action-button {
+    width: 66px;
   }
 
   .chat-bubble,
@@ -1515,6 +1545,10 @@ h1 {
 
   .chat-composer {
     grid-template-columns: 1fr;
+  }
+
+  .chat-actions {
+    justify-content: flex-end;
   }
 
   .chat-shell {

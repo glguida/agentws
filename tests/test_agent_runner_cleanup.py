@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 
+import json
 import os
 import shutil
 import signal
@@ -35,6 +36,13 @@ def read_int(path: Path) -> int:
         return int(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return 0
+
+
+def read_json_lines(path: Path):
+    try:
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return []
 
 
 class AgentRunnerCleanupTest(unittest.TestCase):
@@ -96,6 +104,8 @@ class AgentRunnerCleanupTest(unittest.TestCase):
             self.assertTrue(wait_for(lambda: read_text(job_dir / "status") == "claimed"))
             self.assertEqual(read_text(job_dir / "agent-id"), "agent-1")
             self.assertTrue((job_dir / "lock").is_dir())
+            transcript = self.root / "agents" / "agent-1" / "transcript.log"
+            self.assertTrue(wait_for(lambda: "run start" in read_text(transcript)))
 
             proc.send_signal(signal.SIGTERM)
             proc.communicate(timeout=5)
@@ -118,6 +128,123 @@ class AgentRunnerCleanupTest(unittest.TestCase):
         self.assert_job_released_after_sigterm(
             [str(self.root / "tools" / "agent-pi-interactive"), "--headless", "planner", "agent-1"]
         )
+
+    def test_console_idle_messages_start_new_pi_rpc_prompts(self):
+        input_log = self.tmp / "pi-input.jsonl"
+        self.write_fake_pi(
+            "\n".join(
+                [
+                    "#!/usr/bin/env python3",
+                    "import json",
+                    "import os",
+                    "import sys",
+                    "from pathlib import Path",
+                    "log = Path(os.environ['PI_INPUT_LOG'])",
+                    "for line in sys.stdin:",
+                    "    with log.open('a', encoding='utf-8') as stream:",
+                    "        stream.write(line)",
+                    "        stream.flush()",
+                    "    print(json.dumps({'type': 'turn_start'}), flush=True)",
+                    "    print(json.dumps({'type': 'turn_end'}), flush=True)",
+                    "    print(json.dumps({'type': 'response', 'success': True}), flush=True)",
+                ]
+            )
+        )
+        self.env["PI_INPUT_LOG"] = str(input_log)
+
+        proc = subprocess.Popen(
+            [str(self.root / "tools" / "agent-pi-interactive"), "--console", "--headless"],
+            cwd=self.root,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            input_fifo = self.root / "agents" / "console" / "input.fifo"
+            self.assertTrue(wait_for(input_fifo.exists))
+
+            self.write_interactive_input(input_fifo, "first")
+            self.assertTrue(wait_for(lambda: len(read_json_lines(input_log)) >= 1))
+            busy_file = self.root / "agents" / "console" / "busy"
+            self.assertTrue(wait_for(lambda: read_text(busy_file) == "0"))
+            self.write_interactive_input(input_fifo, "second")
+            self.assertTrue(wait_for(lambda: len(read_json_lines(input_log)) >= 2))
+
+            sent = read_json_lines(input_log)
+            self.assertEqual(["prompt", "prompt"], [item["type"] for item in sent[:2]])
+            transcript = self.root / "agents" / "console" / "transcript.log"
+            self.assertTrue(wait_for(lambda: read_text(transcript).count("### User") >= 2))
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.communicate(timeout=5)
+
+    def test_console_message_while_streaming_uses_pi_rpc_follow_up(self):
+        input_log = self.tmp / "pi-input.jsonl"
+        self.write_fake_pi(
+            "\n".join(
+                [
+                    "#!/usr/bin/env python3",
+                    "import json",
+                    "import os",
+                    "import sys",
+                    "from pathlib import Path",
+                    "log = Path(os.environ['PI_INPUT_LOG'])",
+                    "for index, line in enumerate(sys.stdin):",
+                    "    with log.open('a', encoding='utf-8') as stream:",
+                    "        stream.write(line)",
+                    "        stream.flush()",
+                    "    if index == 0:",
+                    "        print(json.dumps({'type': 'turn_start'}), flush=True)",
+                    "    elif index == 1:",
+                    "        print(json.dumps({'type': 'turn_end'}), flush=True)",
+                    "        print(json.dumps({'type': 'response', 'success': True}), flush=True)",
+                ]
+            )
+        )
+        self.env["PI_INPUT_LOG"] = str(input_log)
+
+        proc = subprocess.Popen(
+            [str(self.root / "tools" / "agent-pi-interactive"), "--console", "--headless"],
+            cwd=self.root,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            input_fifo = self.root / "agents" / "console" / "input.fifo"
+            busy_file = self.root / "agents" / "console" / "busy"
+            self.assertTrue(wait_for(input_fifo.exists))
+
+            self.write_interactive_input(input_fifo, "first")
+            self.assertTrue(wait_for(lambda: read_text(busy_file) == "1"))
+            self.write_interactive_input(input_fifo, "second")
+            self.assertTrue(wait_for(lambda: len(read_json_lines(input_log)) >= 2))
+
+            sent = read_json_lines(input_log)
+            self.assertEqual(["prompt", "follow_up"], [item["type"] for item in sent[:2]])
+            transcript = self.root / "agents" / "console" / "transcript.log"
+            self.assertTrue(wait_for(lambda: read_text(transcript).count("### User") >= 2))
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.communicate(timeout=5)
+
+    def write_interactive_input(self, input_fifo: Path, message: str):
+        with input_fifo.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"message": message, "mode": "prompt"}) + "\n")
 
     def test_run_agentws_restarts_agent_after_nonzero_exit(self):
         count_file = self.tmp / "pi-starts"

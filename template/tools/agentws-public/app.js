@@ -404,8 +404,9 @@ function renderChat() {
   const placeholder = inputReady ? "Message console" : "Console agent is not ready";
   const existingInput = document.querySelector("#chatInput");
   if (existingInput) state.chatDraft = existingInput.value;
-  const actionLabel = isBusy ? "Stop" : "Send";
-  const actionDisabled = !inputReady || (!isBusy && !state.chatDraft.trim());
+  const actionDisabled = !inputReady || !state.chatDraft.trim();
+  const steerHidden = isBusy ? "" : "hidden";
+  const steerDisabled = inputReady ? "" : "disabled";
 
   els.chat.innerHTML = `
     <section class="chat-shell" aria-label="Console chat">
@@ -422,7 +423,14 @@ function renderChat() {
       </div>
       <form class="chat-composer" id="chatComposer">
         <textarea id="chatInput" rows="1" placeholder="${escapeAttr(placeholder)}" ${inputReady ? "" : "disabled"}>${escapeHtml(state.chatDraft)}</textarea>
-        <button class="chat-action-button ${isBusy ? "stop" : "send"}" type="submit" id="chatActionButton" ${actionDisabled ? "disabled" : ""}>${actionLabel}</button>
+        <div class="chat-actions">
+          <button class="chat-action-button send" type="submit" id="chatActionButton" ${actionDisabled ? "disabled" : ""}>Send</button>
+          <button class="chat-steer-button" type="button" id="chatSteerButton" title="Steer now" aria-label="Steer now" ${steerHidden} ${steerDisabled}>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8zM9.2 8.7v6.6h5.6V8.7z"/>
+            </svg>
+          </button>
+        </div>
         <div class="chat-input-hint">Enter to send, Shift+Enter for new line</div>
       </form>
     </section>
@@ -445,6 +453,7 @@ function renderChat() {
 function bindChatComposer(agent) {
   const form = document.querySelector("#chatComposer");
   const input = document.querySelector("#chatInput");
+  const steerButton = document.querySelector("#chatSteerButton");
   if (!form || !input) return;
 
   input.addEventListener("input", () => {
@@ -462,6 +471,7 @@ function bindChatComposer(agent) {
     event.preventDefault();
     submitChatAction(consoleAgent() || agent, input);
   });
+  steerButton?.addEventListener("click", () => sendChatSteer(consoleAgent() || agent, input));
   syncChatAction(agent);
 }
 
@@ -476,27 +486,43 @@ function bindChatThread() {
 function syncChatAction(agent) {
   const input = document.querySelector("#chatInput");
   const actionButton = document.querySelector("#chatActionButton");
+  const steerButton = document.querySelector("#chatSteerButton");
   if (!input || !actionButton) return;
   const isBusy = Boolean(agent?.busy);
-  actionButton.textContent = isBusy ? "Stop" : "Send";
-  actionButton.classList.toggle("stop", isBusy);
-  actionButton.classList.toggle("send", !isBusy);
-  actionButton.disabled = isBusy ? !agent?.inputReady : !input.value.trim() || !agent?.inputReady;
+  actionButton.textContent = "Send";
+  actionButton.classList.add("send");
+  actionButton.classList.remove("stop");
+  actionButton.disabled = !input.value.trim() || !agent?.inputReady;
+  if (steerButton) {
+    steerButton.hidden = !isBusy;
+    steerButton.disabled = !agent?.inputReady || !isBusy;
+  }
 }
 
 function submitChatAction(agent, input) {
-  if (agent?.busy) {
-    if (!agent.inputReady) return;
-    sendAgentInput(agent.id, "Stop.", "steer", {
-      input,
-      clearInput: false,
-      refreshInspector: false,
-      refreshChat: true,
-      successMessage: "Stop sent"
-    });
+  sendChatPrompt(agent, input);
+}
+
+function sendChatSteer(agent, input) {
+  if (!agent?.inputReady) {
+    toast("Console input is not ready");
     return;
   }
-  sendChatPrompt(agent, input);
+  const customMessage = input?.value.trim() || "";
+  const message = customMessage || "Stop.";
+  const hasCustomMessage = Boolean(customMessage);
+  sendAgentInput(agent.id, message, "steer", {
+    input,
+    clearInput: hasCustomMessage,
+    refreshInspector: false,
+    refreshChat: true,
+    successMessage: hasCustomMessage ? "Steer sent" : "Stop sent"
+  }).then((sent) => {
+    if (sent && hasCustomMessage) {
+      state.chatDraft = "";
+      autoSizeChatInput(input);
+    }
+  });
 }
 
 function sendChatPrompt(agent, input) {
@@ -504,12 +530,13 @@ function sendChatPrompt(agent, input) {
     toast("Console input is not ready");
     return;
   }
-  sendAgentInput(agent.id, input.value, "prompt", {
+  const mode = agent?.busy ? "follow_up" : "prompt";
+  sendAgentInput(agent.id, input.value, mode, {
     input,
     clearInput: true,
     refreshInspector: false,
     refreshChat: true,
-    successMessage: "Message sent"
+    successMessage: agent?.busy ? "Follow-up queued" : "Message sent"
   }).then((sent) => {
     if (sent) {
       state.chatDraft = "";

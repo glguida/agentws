@@ -74,12 +74,18 @@ class Transcript:
         self.mirror_stdout = mirror_stdout
         self.mirror_prefix = mirror_prefix
         self.mirror_line_start = True
+        self.lock = threading.RLock()
 
     def close(self) -> None:
-        for f in self.files:
-            f.close()
+        with self.lock:
+            for f in self.files:
+                f.close()
 
     def write(self, text: str) -> None:
+        with self.lock:
+            self._write(text)
+
+    def _write(self, text: str) -> None:
         if not text:
             return
         for f in self.files:
@@ -103,19 +109,32 @@ class Transcript:
         return "".join(out)
 
     def line(self, text: str = "") -> None:
-        self.write(text + "\n")
+        with self.lock:
+            self._write(text + "\n")
 
-    def heading(self, title: str) -> None:
-        if self.section != title:
-            self.write(f"\n### {title}\n\n")
+    def heading(self, title: str, force: bool = False) -> None:
+        with self.lock:
+            self._heading(title, force=force)
+
+    def _heading(self, title: str, force: bool = False) -> None:
+        if force or self.section != title:
+            self._write(f"\n### {title}\n\n")
             self.section = title
 
+    def text_block(self, title: str, text: str, force_heading: bool = False) -> None:
+        if not text:
+            return
+        with self.lock:
+            self._heading(title, force=force_heading)
+            self._write(text)
+
     def event(self, title: str, detail: str | None = None) -> None:
-        self.section = None
-        self.line()
-        self.line(f"[{timestamp()}] {title}")
-        if detail:
-            self.line(detail.rstrip())
+        with self.lock:
+            self.section = None
+            self._write("\n")
+            self._write(f"[{timestamp()}] {title}\n")
+            if detail:
+                self._write(detail.rstrip() + "\n")
 
 
 class Renderer:
@@ -149,8 +168,7 @@ class Renderer:
     def text_block(self, title: str, text: str) -> None:
         if not text:
             return
-        self.t.heading(title)
-        self.t.write(text)
+        self.t.text_block(title, text)
         if title == "Assistant":
             self.saw_assistant_text = True
 
@@ -288,6 +306,15 @@ class Renderer:
         typ = event.get("type")
         if typ == "session":
             return
+        if typ == "message":
+            message = event.get("message")
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                if message.get("stopReason") == "error":
+                    error = message.get("errorMessage") or message.get("error")
+                    if error:
+                        self.text_block("Assistant", f"Error: {error}\n")
+                        return
+                return
         if typ in ("agent_start", "agent_end", "turn_start", "turn_end", "message_start", "message_end"):
             return
         if typ == "message_update":
@@ -335,11 +362,10 @@ class Renderer:
         return
 
     def tool_block(self, name: str, detail: str | None = None) -> None:
-        self.t.heading("Tool Call")
-        self.t.line(name)
+        lines = [name]
         if detail:
-            self.t.line(detail.rstrip())
-        self.t.line()
+            lines.append(detail.rstrip())
+        self.t.text_block("Tool Call", "\n".join(lines) + "\n\n")
 
     def scalar_metadata(self, value: dict[str, Any], skip: set[str] | None = None) -> str:
         skip = skip or set()

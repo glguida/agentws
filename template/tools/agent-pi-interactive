@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib.machinery
 import json
 import os
@@ -63,6 +64,18 @@ def write_json_line(stream, value: dict[str, Any], lock: threading.Lock) -> bool
             return False
 
 
+def acquire_interactive_lock(agent_dir: Path, agent_name: str):
+    lock_file = (agent_dir / "interactive.lock").open("w", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        agent_mod.die(f"interactive agent '{agent_name}' is already running")
+    lock_file.write(f"{os.getpid()}\n")
+    lock_file.flush()
+    return lock_file
+
+
 def read_job_status(job_dir: Path) -> str:
     try:
         return (job_dir / "status").read_text(encoding="utf-8").strip()
@@ -109,6 +122,7 @@ def main() -> int:
     if not agent_dir_out:
         agent_mod.die("agent-new returned no agent directory")
     agent_dir = Path(agent_dir_out)
+    interactive_lock = acquire_interactive_lock(agent_dir, args.agent_name)
 
     agent_mod.write_file(agent_dir / "engine", "pi-interactive")
     agent_mod.write_file(agent_dir / "interactive", "1")
@@ -190,8 +204,7 @@ def main() -> int:
         agent_mod.write_file(agent_busy, "1\n" if active else "0\n")
 
     def transcript_user_message(message: str) -> None:
-        transcript.heading("User")
-        transcript.write(message.rstrip() + "\n")
+        transcript.text_block("User", message.rstrip() + "\n", force_heading=True)
 
     try:
         for signum in shutdown_signals:
@@ -261,6 +274,10 @@ def main() -> int:
                         set_streaming(True)
                     elif typ in ("agent_end", "turn_end"):
                         set_streaming(False)
+                    if typ == "message":
+                        message = event.get("message")
+                        if isinstance(message, dict) and message.get("role") == "assistant" and message.get("stopReason"):
+                            set_streaming(False)
                     if typ == "response":
                         set_streaming(False)
                     if typ == "response" and event.get("success") is False:
@@ -384,6 +401,7 @@ def main() -> int:
             os.close(fifo_anchor)
         except OSError:
             pass
+        interactive_lock.close()
         try:
             input_fifo.unlink()
         except OSError:

@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import re
+import select
 import signal
 import stat
 import subprocess
@@ -25,6 +26,7 @@ PUBLIC_DIR = Path(__file__).resolve().parent / "agentws-public"
 DEFAULT_PORT = 4137
 PROCESS_CHECK_INTERVAL = 1.0
 PROCESS_RESTART_DELAY = 1.0
+FIFO_WRITE_TIMEOUT = 2.0
 VALID_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 ALLOWED_FILES = {
     "task": {"log.md", "spec.md", "result.md", "state"},
@@ -123,6 +125,23 @@ def read_text(path: Path, fallback="", max_bytes=256 * 1024, tail=False):
             return stream.read(max_bytes).decode("utf-8", "replace") + "\n[... content truncated ...]\n"
     except OSError:
         return fallback
+
+
+def write_all_nonblocking(fd: int, payload: bytes, timeout: float = FIFO_WRITE_TIMEOUT) -> None:
+    deadline = time.monotonic() + timeout
+    offset = 0
+    while offset < len(payload):
+        try:
+            written = os.write(fd, payload[offset:])
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("interactive input timed out")
+            select.select([], [fd], [], min(remaining, 0.1))
+            continue
+        if written <= 0:
+            raise BrokenPipeError("interactive input pipe closed")
+        offset += written
 
 
 def list_dirs(path: Path, include_hidden=False):
@@ -644,7 +663,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.send_json(409, {"error": f"interactive input is not available: {exc.strerror}"})
             return
         try:
-            os.write(fd, line.encode("utf-8"))
+            write_all_nonblocking(fd, line.encode("utf-8"))
+        except TimeoutError as exc:
+            self.send_json(409, {"error": str(exc)})
+            return
+        except OSError as exc:
+            self.send_json(409, {"error": f"interactive input write failed: {exc.strerror or exc}"})
+            return
         finally:
             os.close(fd)
         self.send_json(200, {"ok": True})
