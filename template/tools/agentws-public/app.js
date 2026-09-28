@@ -34,6 +34,7 @@ const columns = [
   ["planning", "Planning"],
   ["active", "Build"],
   ["review", "Review"],
+  ["challenge", "Challenge"],
   ["integrate", "Integrate"],
   ["blocked", "Blocked"],
   ["closed", "Done"]
@@ -43,13 +44,14 @@ const stageLabels = new Map([
   ["plan", "Plan"],
   ["build", "Build"],
   ["review", "Review"],
+  ["challenge", "Challenge"],
   ["integrate", "Integrate"],
   ["docs", "Docs"],
   ["rebase", "Rebase"],
   ["notify", "Notify"],
   ["other", "Other"]
 ]);
-const primaryStages = ["plan", "build", "review", "integrate"];
+const primaryStages = ["plan", "build", "review", "challenge", "integrate"];
 const optionalStages = ["docs", "rebase", "notify", "other"];
 
 const els = {
@@ -1507,7 +1509,7 @@ function toneFor(status) {
   if (["done", "closed"].includes(status)) return "tone-green";
   if (["failed", "blocked"].includes(status)) return "tone-coral";
   if (["running", "claimed", "active"].includes(status)) return "tone-blue";
-  if (["review", "integrate"].includes(status)) return "tone-violet";
+  if (["review", "challenge", "integrate"].includes(status)) return "tone-violet";
   return "tone-amber";
 }
 

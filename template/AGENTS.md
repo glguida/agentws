@@ -62,8 +62,9 @@ view, and use task commands for comments, state, and final result.
 
 You must read `bin/task-show <task-id>` before doing job work and use the task
 as the shared context for every decision. If you cannot read the task, do not
-continue with implementation, review, or integration work; create the required
-planner notification and fail or release the job with the concrete reason.
+continue with implementation, review, antagonist challenges, or integration
+work; create the required planner notification and fail or release the job with
+the concrete reason.
 
 Process that job only. Do not claim another job yourself. Do not wait for more
 jobs. Do not invent a role. Read the assigned role file, process the assigned
@@ -321,7 +322,7 @@ This applies to every role. Examples include:
 
 Do not update documentation yourself unless the job spec explicitly asks you to.
 Instead, ask the planner to route documentation work through the normal change
-workflow: implementer -> reviewer -> committer.
+workflow: implementer -> reviewer -> antagonist -> committer.
 
 Documentation-request planner job specs should include:
 
@@ -345,9 +346,9 @@ Documentation-request planner job specs should include:
 
 ## When Done
 Decide whether this documentation update is needed for the task. If needed,
-create an implementer job to update the docs, followed by review and
-integration. If not needed, record the decision with `bin/task-comment` and
-close this planner job.
+create an implementer job to update the docs, followed by review, antagonist
+challenge, and integration. If not needed, record the decision with
+`bin/task-comment` and close this planner job.
 ```
 
 Planner notification specs should include:
@@ -429,15 +430,17 @@ If a task modifies a Git-backed target, the planner must create or name a
 dedicated branch and worktree for the change before creating implementation
 jobs. The planner records the branch, worktree, and base commit in
 the task with `bin/task-comment` and includes them in all implementer,
-reviewer, and integration job specs. The base branch must be explicit in every
-job spec; it is the branch in the original checkout that receives approved work,
-such as `master` or `main`.
+reviewer, antagonist, and integration job specs. The base branch must be
+explicit in every job spec; it is the branch in the original checkout that
+receives approved work, such as `master` or `main`.
 
-Implementers and reviewers work only in the dedicated worktree named by the
-planner. They do not edit, commit in, or merge into the original project
-checkout. The local committer is the exception: after review approval, it uses
-the original base checkout only to merge the named work branch into the named
-base branch and run final verification.
+Implementers, reviewers, and antagonists work only in the dedicated worktree
+named by the planner. They do not edit, commit in, or merge into the original
+project checkout. Antagonists keep the reviewed artifact unchanged and route
+fixes to the implementer. The local committer is the exception: after both
+review and antagonist approval, it uses the original base checkout only to
+merge the named work branch into the named base branch and run final
+verification.
 
 Use this model for Git-backed changes:
 
@@ -451,6 +454,10 @@ worktree on task branch
         | implementer changes and verifies
         v
 reviewer inspects worktree and independently runs verification
+        |
+        | antagonist challenges the reviewed artifact
+        v
+reviewed artifact passes antagonist checks
         |
         | committer merges approved work branch into base branch
         v
@@ -474,9 +481,9 @@ Integration role: committer
 Integration action or command: <what the committer must do or run>
 ```
 
-Reviewer and committer jobs must include the verification commands to run. If a
-verification command cannot be run, the role must record exactly why in the job
-log and planner notification.
+Reviewer, antagonist, and committer jobs must include the verification commands
+to run. If a verification command cannot be run, the role must record exactly
+why in the job log and planner notification.
 
 ## Helpers
 

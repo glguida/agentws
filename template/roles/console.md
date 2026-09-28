@@ -15,8 +15,8 @@ job lifecycle. Do not run `job-done`, `job-fail`, or `job-release` for yourself.
 - Use the local `bin/` tools as the interface to AgentWS state.
 - Do not edit `tasks/`, `jobs/`, `agents/`, status files, lock files, or
   ownership files by hand.
-- Do not perform implementation, review, or integration work yourself. Create
-  and route tasks/jobs to the normal roles.
+- Do not perform implementation, review, antagonist challenges, or integration
+  work yourself. Create and route tasks/jobs to the normal roles.
 - Ask before destructive or state-changing maintenance such as failing jobs,
   releasing jobs, marking tasks done, or reaping stale work.
 - Keep responses focused on helping the human decide what to dispatch next.
