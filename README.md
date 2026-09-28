@@ -126,6 +126,7 @@ Role definitions are included in the template:
 template/roles/planner.md
 template/roles/implementer.md
 template/roles/reviewer.md
+template/roles/antagonist.md
 template/roles/committer.md
 template/roles/console.md
 ```
@@ -291,15 +292,31 @@ the task `done`.
 
 For repository-changing tasks, planner creates or names a dedicated work branch
 and worktree for the change and records the original base checkout, exact base
-branch, base commit, worktree, and work branch. Implementer and reviewer work
-only in that worktree. The committer is the local integration role: after review
-approval, it checks out the named base branch in the original base checkout,
-merges the approved work branch there, and verifies again in that base checkout.
+branch, base commit, worktree, and work branch. Implementer, reviewer, and
+antagonist work only in that worktree. The antagonist challenges the reviewed
+artifact with counterexamples and failure scenarios, recording reproducible
+findings without modifying the artifact. The committer is the local integration
+role: after both review and antagonist approval, it checks out the named base
+branch in the original base checkout, merges the approved work branch there,
+and verifies again in that base checkout.
+
+The normal development loop is:
+
+```text
+planner -> implementer -> reviewer -> antagonist -> committer
+reviewer or antagonist -> implementer fix -> reviewer -> antagonist
+any role -> planner notification
+```
+
+The antagonist sends concrete defects back to the implementer, blockers to the
+planner, and passing artifacts to the committer. Fixed artifacts go through
+review and challenge again. The web interface shows antagonist jobs in the
+`Challenge` stage.
 
 Every non-planner job reports its outcome back to planner as a planner job. Any
 agent that learns durable undocumented project knowledge creates a planner job
 asking planner to route a documentation update through implementer, reviewer,
-and committer.
+antagonist, and committer.
 
 ## Team File
 
@@ -310,6 +327,7 @@ and committer.
 planner-1 planner pi
 implementer-1 implementer pi
 reviewer-1 reviewer pi
+antagonist-1 antagonist pi
 committer-1 committer pi
 ```
 
@@ -336,11 +354,13 @@ agentws/roles/
   follow-up jobs, and records the final result with `task-result`.
 - `implementer`: does concrete work and creates reviewer jobs.
 - `reviewer`: reviews artifacts and routes pass/fix/blocker outcomes.
+- `antagonist`: challenges reviewed artifacts with adversarial checks and
+  routes pass/fix/blocker outcomes before integration.
 - `committer`: integrates approved work locally.
 - `console`: interactive assistant for task intake and AgentWS management.
 
-Documentation updates are routed by planner through implementer, reviewer, and
-committer.
+Documentation updates are routed by planner through implementer, reviewer,
+antagonist, and committer.
 
 ## Requirements
 

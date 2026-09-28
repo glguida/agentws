@@ -30,11 +30,17 @@ required behavior is missing, the result is `changes needed` or `blocked`, not
 ## Results
 
 Pass:
-Create a `role=committer` integration job. The integration job must name the
-base checkout, base branch, base commit, worktree, work branch, required
-integration action or command, and verification commands the committer must run
-again. Passing means all required behavior is implemented; it does not mean "the
-reduced scope is acceptable."
+Create a `role=antagonist` challenge job for the approved artifact. Include the
+original implementation job, this review job, the review evidence, and the
+exact artifact identity (commit plus saved patches and content checksums for
+any uncommitted or untracked changes). Name the base checkout, base branch,
+base commit, worktree, work branch, required integration action or command, and
+verification commands. Identify assumptions, risks, and verification gaps for
+the antagonist to challenge independently. On pass, it creates the committer job;
+on changes needed, it creates an implementer fix job that must pass review and
+challenge again. Do not create an integration job directly. Passing means all
+required behavior is implemented; it does not mean "the reduced scope is
+acceptable."
 
 Changes needed:
 Create a `role=implementer` fix job with the original job, review job, artifact

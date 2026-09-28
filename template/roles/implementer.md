@@ -79,11 +79,13 @@ Integration action or command: <what the committer must do or run>
 <risks, questions, or important files>
 
 ## When Done
-On pass, create a `role=committer` integration job for the approved artifact.
+On pass, create a `role=antagonist` challenge job for the reviewed artifact.
 On changes needed, create a `role=implementer` fix job.
 ```
 
-Do not create an integration job directly.
+Do not create an integration job directly. Fix jobs from a reviewer or
+antagonist follow the same review handoff; changed artifacts must pass review
+and antagonist checks again before integration.
 
 ## Problems
 

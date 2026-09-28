@@ -45,6 +45,7 @@ ROLE_STAGE = {
     "planner": "plan",
     "implementer": "build",
     "reviewer": "review",
+    "antagonist": "challenge",
     "committer": "integrate",
     "console": "console",
 }
@@ -201,6 +202,8 @@ def duration_ms(start, end):
 
 def infer_stage(job_id, role):
     lower = job_id.lower()
+    if role.lower() == "antagonist":
+        return ROLE_STAGE["antagonist"]
     if re.search(r"(^|-)notify(-\d+)?$", job_id):
         return "notify"
     if re.search(r"(^|-)(commit|clean-commit)(-\d+)?$", job_id) or re.search(r"(^|-)integrate(?:-[a-z0-9_-]+)?(-\d+)?$", job_id):
@@ -403,11 +406,14 @@ def infer_task_flow_state(task, jobs, attention):
         return "closed"
     if attention:
         return "blocked"
-    if any(job["status"] in {"running", "claimed"} for job in jobs):
-        return "active"
+    active = [job for job in jobs if job["status"] in {"running", "claimed"}]
+    if active:
+        return "challenge" if any(job["stage"] == "challenge" for job in active) else "active"
     pending = [job for job in jobs if job["status"] == "pending"]
     if any(job["stage"] == "integrate" for job in pending):
         return "integrate"
+    if any(job["stage"] == "challenge" for job in pending):
+        return "challenge"
     if any(job["stage"] == "review" for job in pending):
         return "review"
     if any(job["stage"] in {"build", "rebase", "docs"} for job in pending):

@@ -452,6 +452,7 @@ h1 {
 .status-pending .status-dot,
 .status-planning .status-dot,
 .status-review .status-dot,
+.status-challenge .status-dot,
 .status-integrate .status-dot,
 .status-intake .status-dot {
   background: var(--amber);

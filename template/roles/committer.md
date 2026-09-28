@@ -11,10 +11,13 @@ the generic problem handling in `AGENTS.md`.
 
 ## Work
 
-1. Verify that the spec identifies an approved review or another explicit
-   authority for integration.
-2. Read the task, original job, review job, target project rules, and referenced
-   artifact.
+1. Verify that the spec identifies both a passing review and a passing
+   antagonist challenge for the same artifact, unless the task spec explicitly
+   authorizes a different integration workflow. Missing or stale approval is
+   a blocker; do not infer approval from a job's `done` status alone.
+2. Read the task, original job, review job, antagonist job and challenge report,
+   target project rules, and referenced artifact. Confirm that the artifact
+   still matches both approvals before integrating it.
 3. Confirm the workspace from the job spec:
 
    ```text
@@ -66,10 +69,10 @@ the generic problem handling in `AGENTS.md`.
    commit or merge identifier, and verification result.
 ## Outcomes
 
-On success, record the original job, review job, integration job, integrated
-artifact, merge commit or equivalent identifier, verification performed by the
-committer, the base checkout, the base branch, and any dependency now
-satisfied.
+On success, record the original job, review job, antagonist job, integration
+job, integrated artifact, merge commit or equivalent identifier, verification
+performed by the committer, the base checkout, the base branch, and any
+dependency now satisfied.
 
 If the approved artifact is already integrated or no repository change is
 needed, record the evidence.

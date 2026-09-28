@@ -27,8 +27,11 @@ request, create the task first, then create jobs linked to that new task.
 ## Spec Completion Rule
 
 The planner must not close a task unless the task spec's requested behavior is
-implemented, reviewed, integrated when needed, and verified according to the
-task's acceptance criteria.
+implemented, reviewed, challenged by the antagonist, integrated when needed,
+and verified according to the task's acceptance criteria. Review and antagonist
+approval must cover the artifact being integrated. An antagonist job marked
+done may have found defects; read its result and follow-up jobs before deciding
+the task is complete.
 
 Do not accept a report that merely investigates, defers, documents, or declares
 requested work "too large" as task completion unless the task spec explicitly
@@ -52,7 +55,7 @@ For an initial "Plan for task" job:
 3. Decide the smallest useful next jobs that are immediately actionable from
    current evidence.
 4. Include the task workspace details and verification commands in every
-   implementer, reviewer, and integration job spec.
+   implementer, reviewer, antagonist, and integration job spec.
 5. Create those jobs with `bin/job-create <job-id> -r <role> -t <task-id>
    <spec-file>`.
 6. Record the plan and created job IDs with `bin/task-comment`.
@@ -82,8 +85,11 @@ when there is one, and a clear artifact or decision to produce.
 
 For normal code changes, the initial planner job creates implementer work only.
 Reviewer jobs are created after an implementer produces an artifact.
-Integration jobs are created after reviewer approval. Do not create reviewer or
-integration jobs up front just because those roles exist in the team.
+Antagonist jobs are created after reviewer approval. Integration jobs are
+created after the antagonist passes the same artifact. Do not create reviewer,
+antagonist, or integration jobs up front just because those roles exist in the
+team. When processing notifications, inspect existing follow-up jobs and avoid
+duplicating or bypassing an in-flight review, challenge, or integration job.
 
 If a task truly needs parallel implementation jobs, split them by disjoint scope
 and say exactly which files, modules, worktrees, or deliverables each job owns.
@@ -94,9 +100,10 @@ whether follow-up work is needed.
 
 - Concrete implementation work goes to `role=implementer`.
 - Review work goes to `role=reviewer`.
+- Adversarial verification of reviewed artifacts goes to `role=antagonist`.
 - Local integration work goes to `role=committer`.
 - Documentation work goes through the normal change workflow:
-  `planner -> implementer -> reviewer -> committer`.
+  `planner -> implementer -> reviewer -> antagonist -> committer`.
 - Coordination, blocked states, and task decisions stay with `role=planner`.
 
 ## Lifecycle
@@ -104,9 +111,9 @@ whether follow-up work is needed.
 The usual development chain is:
 
 ```text
-planner -> implementer -> reviewer -> committer -> planner notification
-                         reviewer -> implementer fix
-                         any role -> planner notification
+planner -> implementer -> reviewer -> antagonist -> committer
+reviewer or antagonist -> implementer fix -> reviewer -> antagonist
+any role -> planner notification
 ```
 
 Planner-created jobs normally belong to the current task. Create a separate
@@ -125,18 +132,21 @@ Integration role: committer
 Integration action or command: <what the committer must do or run>
 
 ## Verification
-<commands implementer, reviewer, and committer must run when feasible>
+<commands implementer, reviewer, antagonist, and committer must run when feasible>
 ```
 
 The implementer changes only the worktree. The reviewer reviews and verifies
-only the worktree. The committer is the local integration role: it merges the
-approved work branch from the worktree into the named base branch in the
-original base checkout, then runs verification again in that base checkout.
+only the worktree. The antagonist challenges that reviewed artifact in the
+worktree without modifying it. The committer is the local integration role: it
+merges the work branch approved by both reviewer and antagonist into the named
+base branch in the original base checkout, then runs verification again in
+that base checkout.
 
 If a notification reports new durable project knowledge that is not documented,
 decide whether the documentation update is needed for the task. If it is, create
-an implementer job for the documentation change, followed by review and
-committer integration. If not, record that decision with `bin/task-comment`.
+an implementer job for the documentation change, followed by review, antagonist
+challenge, and committer integration. If not, record that decision with
+`bin/task-comment`.
 
 ## Problems
 

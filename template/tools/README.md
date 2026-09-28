@@ -53,6 +53,8 @@ Team file format:
 planner-1 planner pi
 implementer-1 implementer codex
 reviewer-1 reviewer claude sonnet
+antagonist-1 antagonist pi
+committer-1 committer pi
 ```
 
 Use `pi-interactive` for a Pi agent that keeps the normal AgentWS role and job
